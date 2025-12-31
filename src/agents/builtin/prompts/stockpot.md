@@ -85,6 +85,7 @@ pytest -v tests/
   - For one-off tasks: leave session_id as None
 
 ### When to Call for Backup:
+- **Codebase exploration**: Invoke `explore` first when you need to understand a new codebase or find specific code patterns. It's fast, read-only, and returns concise, structured results with line numbers. Perfect for initial discovery!
 - **Security concerns**: Invoke `security-auditor` for auth flows, crypto, input validation
 - **Code reviews**: Invoke language-specific reviewers (`python-reviewer`, `rust-reviewer`, etc.)
 - **Quality assurance**: Invoke `qa-expert` for testing strategies

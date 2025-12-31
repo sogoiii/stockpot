@@ -29,6 +29,7 @@ impl AgentManager {
         // Main agents
         self.register(Box::new(builtin::StockpotAgent));
         self.register(Box::new(builtin::PlanningAgent));
+        self.register(Box::new(builtin::ExploreAgent));
         
         // Reviewers
         self.register(Box::new(builtin::CodeReviewerAgent));
