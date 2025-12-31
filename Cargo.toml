@@ -16,18 +16,18 @@ path = "src/main.rs"
 
 [dependencies]
 # SerdesAI - AI agent framework
-serdes-ai = { path = "../serdesAI/serdes-ai", features = ["full"] }
-serdes-ai-core = { path = "../serdesAI/serdes-ai-core" }
-serdes-ai-agent = { path = "../serdesAI/serdes-ai-agent", features = ["tracing-integration"] }
-serdes-ai-models = { path = "../serdesAI/serdes-ai-models", features = ["full", "chatgpt-oauth", "claude-code-oauth"] }
-serdes-ai-providers = { path = "../serdesAI/serdes-ai-providers", features = ["full"] }
-serdes-ai-tools = { path = "../serdesAI/serdes-ai-tools" }
-serdes-ai-mcp = { path = "../serdesAI/serdes-ai-mcp" }
+serdes-ai = { git = "https://github.com/janfeddersen-wq/serdesAI", path = "serdes-ai", features = ["full"] }
+serdes-ai-core = { git = "https://github.com/janfeddersen-wq/serdesAI", path = "serdes-ai-core" }
+serdes-ai-agent = { git = "https://github.com/janfeddersen-wq/serdesAI", path = "serdes-ai-agent", features = ["tracing-integration"] }
+serdes-ai-models = { git = "https://github.com/janfeddersen-wq/serdesAI", path = "serdes-ai-models", features = ["full", "chatgpt-oauth", "claude-code-oauth"] }
+serdes-ai-providers = { git = "https://github.com/janfeddersen-wq/serdesAI", path = "serdes-ai-providers", features = ["full"] }
+serdes-ai-tools = { git = "https://github.com/janfeddersen-wq/serdesAI", path = "serdes-ai-tools" }
+serdes-ai-mcp = { git = "https://github.com/janfeddersen-wq/serdesAI", path = "serdes-ai-mcp" }
 
 # Markdown rendering
-streamdown-parser = { path = "../streamdown-rs/crates/streamdown-parser" }
-streamdown-render = { path = "../streamdown-rs/crates/streamdown-render" }
-streamdown-config = { path = "../streamdown-rs/crates/streamdown-config" }
+streamdown-parser = { git = "https://github.com/fed-stew/streamdown-rs", path = "crates/streamdown-parser" }
+streamdown-render = { git = "https://github.com/fed-stew/streamdown-rs", path = "crates/streamdown-render" }
+streamdown-config = { git = "https://github.com/fed-stew/streamdown-rs", path = "crates/streamdown-config" }
 
 # CLI
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }

@@ -45,23 +45,50 @@ Stockpot is an open-source alternative to expensive AI coding tools like Cursor 
 
 ## 📦 Installation
 
+### From GitHub Releases (Recommended)
+
+Download the latest release for your platform from the [Releases page](https://github.com/your-org/stockpot/releases).
+
+**Linux (x86_64)**:
+```bash
+curl -LO https://github.com/your-org/stockpot/releases/latest/download/spot-linux-x86_64.tar.gz
+tar xzf spot-linux-x86_64.tar.gz
+sudo mv spot /usr/local/bin/
+```
+
+**macOS (Intel)**:
+```bash
+curl -LO https://github.com/your-org/stockpot/releases/latest/download/spot-macos-x86_64.tar.gz
+tar xzf spot-macos-x86_64.tar.gz
+sudo mv spot /usr/local/bin/
+```
+
+**macOS (Apple Silicon)**:
+```bash
+curl -LO https://github.com/your-org/stockpot/releases/latest/download/spot-macos-aarch64.tar.gz
+tar xzf spot-macos-aarch64.tar.gz
+sudo mv spot /usr/local/bin/
+```
+
+**Windows**:
+Download `spot-windows-x86_64.zip` from the releases page, extract it, and add the directory to your PATH.
+
 ### From Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/Fed-Stew/stockpot
+git clone https://github.com/your-org/stockpot.git
 cd stockpot
-
-# Build and install
 cargo install --path .
+```
 
-# Or build in release mode
-cargo build --release
-./target/release/pup
+### Verify Installation
+
+```bash
+spot --version
 ```
 
 ### Prerequisites
-- Rust 1.75 or later
+- Rust 1.75 or later (only needed for building from source)
 - ripgrep (`rg`) for fast searching
 
 ## 🚀 Quick Start
