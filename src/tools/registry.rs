@@ -15,6 +15,7 @@ use serdes_ai_tools::{
 
 use super::file_ops::{self, FileError};
 use super::shell::{self, ShellError};
+use super::agent_tools::{InvokeAgentTool, ListAgentsTool};
 
 /// Arc-wrapped tool for shared ownership.
 pub type ArcTool = Arc<dyn Tool + Send + Sync>;
@@ -618,6 +619,8 @@ pub struct SpotToolRegistry {
     pub grep: GrepTool,
     pub run_shell_command: RunShellCommandTool,
     pub share_reasoning: ShareReasoningTool,
+    pub invoke_agent: InvokeAgentTool,
+    pub list_agents: ListAgentsTool,
 }
 
 impl SpotToolRegistry {
@@ -636,6 +639,8 @@ impl SpotToolRegistry {
             Arc::new(self.grep.clone()),
             Arc::new(self.run_shell_command.clone()),
             Arc::new(self.share_reasoning.clone()),
+            Arc::new(self.invoke_agent.clone()),
+            Arc::new(self.list_agents.clone()),
         ]
     }
 
@@ -660,6 +665,8 @@ impl SpotToolRegistry {
                 "grep" => tools.push(Arc::new(self.grep.clone())),
                 "run_shell_command" => tools.push(Arc::new(self.run_shell_command.clone())),
                 "share_your_reasoning" => tools.push(Arc::new(self.share_reasoning.clone())),
+                "invoke_agent" => tools.push(Arc::new(self.invoke_agent.clone())),
+                "list_agents" => tools.push(Arc::new(self.list_agents.clone())),
                 _ => {} // Unknown tool, skip
             }
         }
@@ -696,8 +703,8 @@ mod tests {
     #[test]
     fn test_registry_creation() {
         let registry = SpotToolRegistry::new();
-        assert_eq!(registry.all_tools().len(), 7);
-        assert_eq!(registry.definitions().len(), 7);
+        assert_eq!(registry.all_tools().len(), 9);
+        assert_eq!(registry.definitions().len(), 9);
     }
 
     #[test]

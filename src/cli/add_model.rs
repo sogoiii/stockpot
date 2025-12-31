@@ -300,6 +300,32 @@ pub async fn run_add_model(db: &Database) -> Result<()> {
     // Generate the model name
     let model_name = format!("{}:{}", provider.id, model.id);
 
+    // Get the API endpoint URL - use provider.api if available, otherwise use known fallbacks
+    let api_url = provider.api.clone().unwrap_or_else(|| {
+        // Known provider API endpoints (when not specified in models.dev)
+        match provider.id.as_str() {
+            "cerebras" => "https://api.cerebras.ai/v1".to_string(),
+            "together" => "https://api.together.xyz/v1".to_string(),
+            "groq" => "https://api.groq.com/openai/v1".to_string(),
+            "fireworks" => "https://api.fireworks.ai/inference/v1".to_string(),
+            "deepseek" => "https://api.deepseek.com/v1".to_string(),
+            "mistral" => "https://api.mistral.ai/v1".to_string(),
+            "perplexity" => "https://api.perplexity.ai".to_string(),
+            "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+            "anyscale" => "https://api.endpoints.anyscale.com/v1".to_string(),
+            "lepton" => "https://api.lepton.ai/v1".to_string(),
+            "novita" => "https://api.novita.ai/v3/openai".to_string(),
+            "hyperbolic" => "https://api.hyperbolic.xyz/v1".to_string(),
+            "sambanova" => "https://api.sambanova.ai/v1".to_string(),
+            _ => {
+                println!("\x1b[1;33m⚠️  No API endpoint found for provider '{}', using OpenAI-compatible default\x1b[0m", provider.id);
+                "https://api.openai.com/v1".to_string()
+            }
+        }
+    });
+
+    println!("\x1b[2mUsing API endpoint: {}\x1b[0m", api_url);
+
     // Create the model config
     let config = ModelConfig {
         name: model_name.clone(),
@@ -316,10 +342,7 @@ pub async fn run_add_model(db: &Database) -> Result<()> {
                 .unwrap_or_else(|| model.id.clone()),
         ),
         custom_endpoint: Some(CustomEndpoint {
-            url: provider
-                .api
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
+            url: api_url,
             api_key: Some(format!("${}", env_var)),
             headers: HashMap::new(),
             ca_certs_path: None,

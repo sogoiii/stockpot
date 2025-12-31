@@ -24,12 +24,12 @@ impl SpotAgent for PlanningAgent {
 
     fn available_tools(&self) -> Vec<&str> {
         vec![
-            "read_file",
             "list_files",
+            "read_file",
             "grep",
+            "share_your_reasoning",
             "invoke_agent",
             "list_agents",
-            "share_reasoning",
         ]
     }
 

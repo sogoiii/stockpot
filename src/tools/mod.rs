@@ -16,7 +16,7 @@
 
 mod file_ops;
 mod shell;
-mod agent_tools;
+pub mod agent_tools;
 mod common;
 pub mod diff;
 pub mod registry;

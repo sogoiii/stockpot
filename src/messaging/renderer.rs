@@ -1,11 +1,14 @@
 //! Terminal renderer for messages with rich markdown support.
 
-use super::{DiffLineType, FileOperation, Message, MessageLevel};
+use super::{
+    AgentEvent, AgentMessage, DiffLineType, FileOperation, Message, MessageLevel,
+    TextDeltaMessage, ToolMessage, ToolStatus,
+};
 use crossterm::{
-    style::{Color, Print, ResetColor, SetForegroundColor, Attribute, SetAttribute},
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     ExecutableCommand,
 };
-use std::io::stdout;
+use std::io::{stdout, Write};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
@@ -76,6 +79,10 @@ impl TerminalRenderer {
             Message::InputRequest(r) => self.render_input_request(&r.prompt),
             Message::Divider => self.render_divider(),
             Message::Clear => self.clear_screen(),
+            Message::Agent(agent_msg) => self.render_agent_event(agent_msg),
+            Message::Tool(tool_msg) => self.render_tool_event(tool_msg),
+            Message::TextDelta(delta) => self.render_text_delta(delta),
+            Message::Thinking(thinking) => self.render_thinking(&thinking.text),
         }
     }
 
@@ -508,6 +515,212 @@ impl TerminalRenderer {
         use crossterm::terminal::{Clear, ClearType};
         stdout().execute(Clear(ClearType::All))?;
         Ok(())
+    }
+
+    /// Render agent lifecycle events (start/complete/error).
+    fn render_agent_event(&self, msg: &AgentMessage) -> std::io::Result<()> {
+        match &msg.event {
+            AgentEvent::Started => {
+                // Print agent header with display name
+                println!();
+                stdout()
+                    .execute(SetForegroundColor(Color::Magenta))?
+                    .execute(SetAttribute(Attribute::Bold))?
+                    .execute(Print(&msg.display_name))?
+                    .execute(Print(":"))?
+                    .execute(ResetColor)?
+                    .execute(SetAttribute(Attribute::Reset))?;
+                println!();
+                println!();
+            }
+            AgentEvent::Completed { run_id: _ } => {
+                // Just add spacing after agent output
+                println!();
+            }
+            AgentEvent::Error { message } => {
+                stdout()
+                    .execute(SetForegroundColor(Color::Red))?
+                    .execute(SetAttribute(Attribute::Bold))?
+                    .execute(Print("❌ Agent error: "))?
+                    .execute(ResetColor)?
+                    .execute(SetAttribute(Attribute::Reset))?
+                    .execute(Print(message))?;
+                println!();
+            }
+        }
+        Ok(())
+    }
+
+    /// Render tool execution events.
+    fn render_tool_event(&self, msg: &ToolMessage) -> std::io::Result<()> {
+        match msg.status {
+            ToolStatus::Started => {
+                // Print tool name in dim
+                print!("\n");
+                stdout()
+                    .execute(SetAttribute(Attribute::Dim))?
+                    .execute(Print(&msg.tool_name))?
+                    .execute(SetAttribute(Attribute::Reset))?
+                    .execute(Print(" "))?;
+                stdout().flush()?;
+            }
+            ToolStatus::ArgsStreaming => {
+                // Args streaming - could show dots or nothing
+            }
+            ToolStatus::Executing => {
+                // Show parsed args nicely formatted
+                if let Some(ref args) = msg.args {
+                    self.render_tool_args(&msg.tool_name, args)?;
+                }
+                stdout().flush()?;
+            }
+            ToolStatus::Completed => {
+                // Just end the line
+                println!();
+            }
+            ToolStatus::Failed => {
+                // Show error
+                if let Some(ref err) = msg.error {
+                    // Truncate long errors
+                    let display_err = if err.len() > 60 {
+                        format!("{}...", &err[..57])
+                    } else {
+                        err.clone()
+                    };
+                    stdout()
+                        .execute(Print(" "))?
+                        .execute(SetForegroundColor(Color::Red))?
+                        .execute(SetAttribute(Attribute::Bold))?
+                        .execute(Print("✗ "))?
+                        .execute(Print(display_err))?
+                        .execute(ResetColor)?
+                        .execute(SetAttribute(Attribute::Reset))?;
+                } else {
+                    stdout()
+                        .execute(Print(" "))?
+                        .execute(SetForegroundColor(Color::Red))?
+                        .execute(SetAttribute(Attribute::Bold))?
+                        .execute(Print("✗ failed"))?
+                        .execute(ResetColor)?
+                        .execute(SetAttribute(Attribute::Reset))?;
+                }
+                println!();
+            }
+        }
+        Ok(())
+    }
+
+    /// Render tool arguments in a nice format based on tool type.
+    fn render_tool_args(&self, tool_name: &str, args: &serde_json::Value) -> std::io::Result<()> {
+        match tool_name {
+            "read_file" => {
+                if let Some(path) = args.get("file_path").and_then(|v| v.as_str()) {
+                    stdout()
+                        .execute(SetForegroundColor(Color::Cyan))?
+                        .execute(Print(path))?
+                        .execute(ResetColor)?;
+                }
+            }
+            "list_files" => {
+                if let Some(dir) = args.get("directory").and_then(|v| v.as_str()) {
+                    stdout()
+                        .execute(SetForegroundColor(Color::Cyan))?
+                        .execute(Print(dir))?
+                        .execute(ResetColor)?;
+                }
+            }
+            "grep" => {
+                if let Some(pattern) = args.get("search_string").and_then(|v| v.as_str()) {
+                    stdout()
+                        .execute(SetForegroundColor(Color::Cyan))?
+                        .execute(Print("'"))?
+                        .execute(Print(pattern))?
+                        .execute(Print("'"))?
+                        .execute(ResetColor)?;
+                }
+            }
+            "agent_run_shell_command" | "run_shell_command" => {
+                if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                    let display_cmd = if cmd.len() > 60 {
+                        format!("{}...", &cmd[..57])
+                    } else {
+                        cmd.to_string()
+                    };
+                    stdout()
+                        .execute(SetForegroundColor(Color::Cyan))?
+                        .execute(Print(display_cmd))?
+                        .execute(ResetColor)?;
+                }
+            }
+            _ => {
+                // Generic: show compact JSON
+                let compact = args.to_string();
+                let display = if compact.len() > 80 {
+                    format!("{}...", &compact[..77])
+                } else {
+                    compact
+                };
+                stdout()
+                    .execute(SetAttribute(Attribute::Dim))?
+                    .execute(Print(display))?
+                    .execute(SetAttribute(Attribute::Reset))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Render streaming text delta.
+    fn render_text_delta(&self, delta: &TextDeltaMessage) -> std::io::Result<()> {
+        print!("{}", delta.text);
+        stdout().flush()?;
+        Ok(())
+    }
+
+    /// Render thinking/reasoning text.
+    fn render_thinking(&self, text: &str) -> std::io::Result<()> {
+        stdout()
+            .execute(SetAttribute(Attribute::Dim))?
+            .execute(Print(text))?
+            .execute(SetAttribute(Attribute::Reset))?;
+        stdout().flush()?;
+        Ok(())
+    }
+
+    /// Run a render loop consuming messages from a receiver.
+    ///
+    /// This is designed to be spawned as a task that renders all messages
+    /// as they arrive from the bus.
+    pub async fn run_loop(&self, mut receiver: crate::messaging::MessageReceiver) {
+        use crate::cli::streaming_markdown::StreamingMarkdownRenderer;
+
+        let mut md_renderer = StreamingMarkdownRenderer::new();
+        let mut in_text_stream = false;
+
+        while let Ok(message) = receiver.recv().await {
+            // Handle text deltas specially for markdown rendering
+            match &message {
+                Message::TextDelta(delta) => {
+                    in_text_stream = true;
+                    if md_renderer.process(&delta.text).is_err() {
+                        // Fallback to basic rendering
+                        let _ = self.render(&message);
+                    }
+                }
+                _ => {
+                    // Flush markdown before non-text messages
+                    if in_text_stream {
+                        let _ = md_renderer.flush();
+                        in_text_stream = false;
+                    }
+                    let _ = self.render(&message);
+                }
+            }
+        }
+
+        // Final flush
+        if in_text_stream {
+            let _ = md_renderer.flush();
+        }
     }
 }
 

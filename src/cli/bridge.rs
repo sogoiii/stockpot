@@ -26,11 +26,13 @@ use crate::agents::{AgentExecutor, AgentManager, StreamEvent};
 use crate::config::Settings;
 use crate::db::Database;
 use crate::mcp::McpManager;
+use crate::messaging::{AgentEvent, Message, MessageBus, MessageReceiver, ToolStatus};
 use crate::models::ModelRegistry;
 use crate::tools::SpotToolRegistry;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use tokio::sync::mpsc;
+use tracing::debug;
 
 /// Outbound message types sent to the UI.
 #[derive(Debug, Clone, Serialize)]
@@ -68,7 +70,8 @@ pub enum BridgeOutMessage {
     ToolExecuted {
         tool_name: String,
         success: bool,
-        output: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Request step started.
     RequestStart {
@@ -100,6 +103,49 @@ pub enum BridgeOutMessage {
 pub struct McpServerStatus {
     pub name: String,
     pub running: bool,
+}
+
+impl BridgeOutMessage {
+    /// Convert a Message bus event to a Bridge output message.
+    fn from_message(msg: Message) -> Option<Self> {
+        match msg {
+            Message::TextDelta(delta) => Some(BridgeOutMessage::TextDelta {
+                text: delta.text,
+            }),
+            Message::Thinking(thinking) => Some(BridgeOutMessage::ThinkingDelta {
+                text: thinking.text,
+            }),
+            Message::Agent(agent) => match agent.event {
+                AgentEvent::Started => None, // Silent - UI can track from tool/text events
+                AgentEvent::Completed { run_id } => {
+                    Some(BridgeOutMessage::Complete { run_id })
+                }
+                AgentEvent::Error { message } => Some(BridgeOutMessage::Error { message }),
+            },
+            Message::Tool(tool) => match tool.status {
+                ToolStatus::Started => Some(BridgeOutMessage::ToolCallStart {
+                    tool_name: tool.tool_name,
+                    tool_call_id: None,
+                }),
+                ToolStatus::ArgsStreaming => None, // We don't have delta here
+                ToolStatus::Executing => Some(BridgeOutMessage::ToolCallComplete {
+                    tool_name: tool.tool_name,
+                }),
+                ToolStatus::Completed => Some(BridgeOutMessage::ToolExecuted {
+                    tool_name: tool.tool_name,
+                    success: true,
+                    error: None,
+                }),
+                ToolStatus::Failed => Some(BridgeOutMessage::ToolExecuted {
+                    tool_name: tool.tool_name,
+                    success: false,
+                    error: tool.error,
+                }),
+            },
+            // Other message types don't map to bridge protocol
+            _ => None,
+        }
+    }
 }
 
 /// Inbound command types from the UI.
@@ -145,6 +191,22 @@ pub enum BridgeInCommand {
     Shutdown,
 }
 
+/// Bridge renderer that outputs NDJSON to stdout.
+struct BridgeRenderer;
+
+impl BridgeRenderer {
+    /// Run the render loop, converting Messages to NDJSON output.
+    async fn run_loop(&self, mut receiver: MessageReceiver) {
+        while let Ok(message) = receiver.recv().await {
+            if let Some(bridge_msg) = BridgeOutMessage::from_message(message) {
+                if let Ok(json) = serde_json::to_string(&bridge_msg) {
+                    println!("{}", json);
+                }
+            }
+        }
+    }
+}
+
 /// Bridge state.
 struct Bridge<'a> {
     db: &'a Database,
@@ -153,6 +215,8 @@ struct Bridge<'a> {
     mcp_manager: McpManager,
     model_registry: ModelRegistry,
     current_model: String,
+    /// Message bus for event-driven output.
+    message_bus: MessageBus,
 }
 
 impl<'a> Bridge<'a> {
@@ -167,6 +231,7 @@ impl<'a> Bridge<'a> {
             mcp_manager: McpManager::new(),
             model_registry: ModelRegistry::load_from_db(db).unwrap_or_default(),
             current_model,
+            message_bus: MessageBus::new(),
         }
     }
 
@@ -179,6 +244,65 @@ impl<'a> Bridge<'a> {
 
     /// Handle a prompt command.
     async fn handle_prompt(&mut self, text: &str) {
+        self.handle_prompt_with_bus(text).await;
+    }
+
+    /// Handle a prompt using the message bus architecture.
+    ///
+    /// This approach uses the message bus for event-driven output,
+    /// making sub-agent output visible through the same NDJSON protocol.
+    async fn handle_prompt_with_bus(&mut self, text: &str) {
+        let agent = match self.agents.current() {
+            Some(a) => a,
+            None => {
+                self.emit(BridgeOutMessage::Error {
+                    message: "No agent selected".to_string(),
+                });
+                return;
+            }
+        };
+
+        debug!(agent = %agent.name(), model = %self.current_model, "Bridge handling prompt");
+
+        // Create executor with message bus
+        let executor = AgentExecutor::new(self.db, &self.model_registry)
+            .with_bus(self.message_bus.sender());
+
+        // Spawn bridge renderer
+        let receiver = self.message_bus.subscribe();
+        let render_handle = tokio::spawn(async move {
+            BridgeRenderer.run_loop(receiver).await;
+        });
+
+        // Execute - all events flow through the bus automatically!
+        let result = executor
+            .execute_with_bus(
+                agent,
+                &self.current_model,
+                text,
+                None, // No history in bridge mode for now
+                &self.tool_registry,
+                &self.mcp_manager,
+            )
+            .await;
+
+        // Give renderer a moment to finish processing, then abort if needed
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        render_handle.abort();
+
+        // Handle errors (successes are emitted through the bus)
+        if let Err(e) = result {
+            self.emit(BridgeOutMessage::Error {
+                message: e.to_string(),
+            });
+        }
+    }
+
+    /// Legacy prompt handling (direct stream processing).
+    ///
+    /// Kept for reference and fallback if needed.
+    #[allow(dead_code)]
+    async fn handle_prompt_legacy(&mut self, text: &str) {
         let agent = match self.agents.current() {
             Some(a) => a,
             None => {
@@ -191,39 +315,68 @@ impl<'a> Bridge<'a> {
 
         let executor = AgentExecutor::new(self.db, &self.model_registry);
 
-        match executor.execute_stream(
-            agent,
-            &self.current_model,
-            text,
-            None,
-            &self.tool_registry,
-            &self.mcp_manager,
-        ).await {
+        match executor
+            .execute_stream(
+                agent,
+                &self.current_model,
+                text,
+                None,
+                &self.tool_registry,
+                &self.mcp_manager,
+            )
+            .await
+        {
             Ok(mut stream) => {
                 while let Some(event_result) = stream.recv().await {
                     match event_result {
                         Ok(event) => {
                             let msg = match event {
-                                StreamEvent::RunStart { run_id: _ } => Some(BridgeOutMessage::Ready {
-                                    version: env!("CARGO_PKG_VERSION").to_string(),
-                                    agent: self.agents.current_name(),
-                                    model: self.current_model.clone(),
+                                StreamEvent::RunStart { run_id: _ } => {
+                                    Some(BridgeOutMessage::Ready {
+                                        version: env!("CARGO_PKG_VERSION").to_string(),
+                                        agent: self.agents.current_name(),
+                                        model: self.current_model.clone(),
+                                    })
+                                }
+                                StreamEvent::RequestStart { step } => {
+                                    Some(BridgeOutMessage::RequestStart { step })
+                                }
+                                StreamEvent::TextDelta { text } => {
+                                    Some(BridgeOutMessage::TextDelta { text })
+                                }
+                                StreamEvent::ThinkingDelta { text } => {
+                                    Some(BridgeOutMessage::ThinkingDelta { text })
+                                }
+                                StreamEvent::ToolCallStart {
+                                    tool_name,
+                                    tool_call_id,
+                                } => Some(BridgeOutMessage::ToolCallStart {
+                                    tool_name,
+                                    tool_call_id,
                                 }),
-                                StreamEvent::RequestStart { step } => Some(BridgeOutMessage::RequestStart { step }),
-                                StreamEvent::TextDelta { text } => Some(BridgeOutMessage::TextDelta { text }),
-                                StreamEvent::ThinkingDelta { text } => Some(BridgeOutMessage::ThinkingDelta { text }),
-                                StreamEvent::ToolCallStart { tool_name, tool_call_id } => Some(BridgeOutMessage::ToolCallStart { tool_name, tool_call_id }),
-                                StreamEvent::ToolCallDelta { delta } => Some(BridgeOutMessage::ToolCallDelta { delta }),
-                                StreamEvent::ToolCallComplete { tool_name } => Some(BridgeOutMessage::ToolCallComplete { tool_name }),
-                                StreamEvent::ToolExecuted { tool_name, success } => Some(BridgeOutMessage::ToolExecuted { 
-                                    tool_name, 
+                                StreamEvent::ToolCallDelta { delta } => {
+                                    Some(BridgeOutMessage::ToolCallDelta { delta })
+                                }
+                                StreamEvent::ToolCallComplete { tool_name } => {
+                                    Some(BridgeOutMessage::ToolCallComplete { tool_name })
+                                }
+                                StreamEvent::ToolExecuted {
+                                    tool_name,
                                     success,
-                                    output: None,
+                                    error,
+                                } => Some(BridgeOutMessage::ToolExecuted {
+                                    tool_name,
+                                    success,
+                                    error,
                                 }),
                                 StreamEvent::ResponseComplete { .. } => None,
                                 StreamEvent::OutputReady => None,
-                                StreamEvent::RunComplete { run_id, .. } => Some(BridgeOutMessage::Complete { run_id }),
-                                StreamEvent::Error { message } => Some(BridgeOutMessage::Error { message }),
+                                StreamEvent::RunComplete { run_id, .. } => {
+                                    Some(BridgeOutMessage::Complete { run_id })
+                                }
+                                StreamEvent::Error { message } => {
+                                    Some(BridgeOutMessage::Error { message })
+                                }
                             };
                             if let Some(m) = msg {
                                 self.emit(m);

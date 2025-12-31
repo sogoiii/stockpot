@@ -24,7 +24,7 @@ macro_rules! define_reviewer {
             }
 
             fn available_tools(&self) -> Vec<&str> {
-                vec!["read_file", "list_files", "grep", "share_reasoning"]
+                vec!["list_files", "read_file", "grep", "share_your_reasoning"]
             }
 
             fn capabilities(&self) -> AgentCapabilities {

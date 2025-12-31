@@ -223,38 +223,85 @@ pub fn show_help() {
     );
 }
 
-/// Display the list of available models.
-pub fn show_models(current_model: &str) {
-    println!(
-        "
-\x1b[1m📦 Available Models:\x1b[0m
+/// Display the list of available models from the registry.
+pub fn show_models(db: &Database, registry: &ModelRegistry, current_model: &str) {
+    use crate::models::ModelType;
+    use std::collections::HashMap;
 
-\x1b[1mOpenAI (requires OPENAI_API_KEY):\x1b[0m
-  openai:gpt-4o           GPT-4o (recommended)
-  openai:gpt-4o-mini      GPT-4o Mini (fast, cheap)
-  openai:gpt-4-turbo      GPT-4 Turbo
-  openai:o1               OpenAI O1 (reasoning)
-  openai:o1-mini          OpenAI O1 Mini
+    // Get all available models (ones with valid API keys/OAuth)
+    let available = registry.list_available(db);
 
-\x1b[1mAnthropic (requires ANTHROPIC_API_KEY):\x1b[0m
-  anthropic:claude-3-5-sonnet    Claude 3.5 Sonnet (recommended)
-  anthropic:claude-3-5-haiku     Claude 3.5 Haiku (fast)
-  anthropic:claude-3-opus        Claude 3 Opus (powerful)
+    if available.is_empty() {
+        println!("\n\x1b[2mNo available models found.\x1b[0m");
+        println!("\x1b[2mUse /add-model to add models from models.dev\x1b[0m");
+        println!("\x1b[2mOr set API keys: OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.\x1b[0m\n");
+        return;
+    }
 
-\x1b[1mGoogle (requires GOOGLE_API_KEY):\x1b[0m
-  gemini:gemini-2.0-flash       Gemini 2.0 Flash
-  gemini:gemini-1.5-pro         Gemini 1.5 Pro
+    // Group models by provider type
+    let mut by_type: HashMap<String, Vec<(&str, Option<&str>)>> = HashMap::new();
 
-\x1b[1mOAuth Models (use /chatgpt-auth or /claude-code-auth):\x1b[0m
-  chatgpt:gpt-4o                        ChatGPT Plus (browser auth)
-  chatgpt:gpt-4o-mini                   ChatGPT Free
-  claude-code-claude-sonnet-4-20250514  Claude Sonnet 4 (VS Code OAuth)
-  claude-code-claude-opus-4-20250514    Claude Opus 4 (VS Code OAuth)
-  claude-code-claude-3-5-sonnet-20241022 Claude 3.5 Sonnet
+    for name in &available {
+        if let Some(config) = registry.get(name) {
+            let type_label = match config.model_type {
+                ModelType::Openai => "OpenAI",
+                ModelType::Anthropic => "Anthropic",
+                ModelType::Gemini => "Google Gemini",
+                ModelType::ClaudeCode => "Claude Code (OAuth)",
+                ModelType::ChatgptOauth => "ChatGPT (OAuth)",
+                ModelType::AzureOpenai => "Azure OpenAI",
+                ModelType::Openrouter => "OpenRouter",
+                ModelType::CustomOpenai | ModelType::CustomAnthropic => {
+                    // For custom endpoints, try to extract provider from name
+                    if let Some(idx) = name.find(':') {
+                        let provider = &name[..idx];
+                        // Capitalize first letter
+                        let mut chars = provider.chars();
+                        match chars.next() {
+                            Some(c) => {
+                                let capitalized: String = c.to_uppercase().chain(chars).collect();
+                                // Leak is fine here - static lifetime for display
+                                Box::leak(capitalized.into_boxed_str()) as &str
+                            }
+                            None => "Custom",
+                        }
+                    } else {
+                        "Custom"
+                    }
+                }
+                ModelType::RoundRobin => "Round Robin",
+            };
 
-\x1b[2mCurrent: {}\x1b[0m
-\x1b[2mUse /model <name> to switch\x1b[0m
-",
-        current_model
-    );
+            by_type
+                .entry(type_label.to_string())
+                .or_default()
+                .push((name.as_str(), config.description.as_deref()));
+        }
+    }
+
+    println!("\n\x1b[1m📦 Available Models:\x1b[0m\n");
+
+    // Sort provider types for consistent display
+    let mut types: Vec<_> = by_type.keys().cloned().collect();
+    types.sort();
+
+    for type_label in types {
+        if let Some(models) = by_type.get(&type_label) {
+            println!("\x1b[1m{}:\x1b[0m", type_label);
+            for (name, desc) in models {
+                let marker = if *name == current_model { "→" } else { " " };
+                let desc_str = desc.unwrap_or("");
+                if desc_str.is_empty() {
+                    println!("  {} \x1b[36m{}\x1b[0m", marker, name);
+                } else {
+                    println!("  {} \x1b[36m{}\x1b[0m", marker, name);
+                    println!("      \x1b[2m{}\x1b[0m", desc_str);
+                }
+            }
+            println!();
+        }
+    }
+
+    println!("\x1b[2mCurrent: {}\x1b[0m", current_model);
+    println!("\x1b[2mUse /model <name> to switch\x1b[0m\n");
 }

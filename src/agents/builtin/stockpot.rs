@@ -24,15 +24,15 @@ impl SpotAgent for StockpotAgent {
 
     fn available_tools(&self) -> Vec<&str> {
         vec![
-            "read_file",
-            "write_file",
             "list_files",
+            "read_file",
+            "edit_file",
+            "delete_file",
             "grep",
-            "run_command",
-            "apply_diff",
+            "run_shell_command",
+            "share_your_reasoning",
             "invoke_agent",
             "list_agents",
-            "share_reasoning",
         ]
     }
 

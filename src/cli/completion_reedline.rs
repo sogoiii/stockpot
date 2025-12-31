@@ -329,6 +329,7 @@ impl Completer for SpotCompleter {
 pub struct SpotPrompt {
     pub agent_name: String,
     pub model_name: String,
+    pub is_pinned: bool,
 }
 
 impl SpotPrompt {
@@ -336,16 +337,33 @@ impl SpotPrompt {
         Self {
             agent_name: agent.to_string(),
             model_name: model.to_string(),
+            is_pinned: false,
+        }
+    }
+
+    pub fn with_pinned(agent: &str, model: &str, is_pinned: bool) -> Self {
+        Self {
+            agent_name: agent.to_string(),
+            model_name: model.to_string(),
+            is_pinned,
         }
     }
 }
 
 impl Prompt for SpotPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Owned(format!(
-            "\x1b[1;33m{}\x1b[0m \x1b[2m[{}]\x1b[0m",
-            self.agent_name, self.model_name
-        ))
+        if self.is_pinned {
+            // Show pinned indicator with magenta color
+            Cow::Owned(format!(
+                "\x1b[1;33m{}\x1b[0m \x1b[35m[📌 {}]\x1b[0m",
+                self.agent_name, self.model_name
+            ))
+        } else {
+            Cow::Owned(format!(
+                "\x1b[1;33m{}\x1b[0m \x1b[2m[{}]\x1b[0m",
+                self.agent_name, self.model_name
+            ))
+        }
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {

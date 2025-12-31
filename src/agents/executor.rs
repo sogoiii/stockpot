@@ -3,12 +3,15 @@
 //! This module provides the execution layer for SpotAgents, using
 //! serdesAI's agent loop with proper tool calling and streaming support.
 
-use crate::agents::SpotAgent;
+use crate::agents::{SpotAgent, AgentManager};
 use crate::auth;
+use crate::config::Settings;
 use crate::db::Database;
 use crate::mcp::McpManager;
+use crate::messaging::{EventBridge, MessageSender};
 use crate::models::{resolve_api_key, ModelRegistry, ModelType};
 use crate::tools::registry::SpotToolRegistry;
+use crate::tools::agent_tools::InvokeAgentTool;
 use tracing::{debug, error, info, warn};
 
 use serdes_ai_agent::{agent, RunOptions};
@@ -102,6 +105,193 @@ impl serdes_ai_agent::ToolExecutor<()> for ToolExecutorAdapter {
     }
 }
 
+/// Executor for invoke_agent that has access to all required dependencies.
+struct InvokeAgentExecutor {
+    db_path: std::path::PathBuf,
+    current_model: String,
+    /// Optional message bus for sub-agent event publishing.
+    bus: Option<MessageSender>,
+}
+
+impl InvokeAgentExecutor {
+    /// Create executor with message bus (preferred - enables visible sub-agent output).
+    fn new(db: &Database, current_model: &str, bus: MessageSender) -> Self {
+        Self {
+            db_path: db.path().to_path_buf(),
+            current_model: current_model.to_string(),
+            bus: Some(bus),
+        }
+    }
+
+    /// Create executor without message bus (legacy - sub-agent output not visible).
+    fn new_legacy(db: &Database, current_model: &str) -> Self {
+        Self {
+            db_path: db.path().to_path_buf(),
+            current_model: current_model.to_string(),
+            bus: None,
+        }
+    }
+
+    fn definition() -> ToolDefinition {
+        InvokeAgentTool::default().definition()
+    }
+}
+
+#[async_trait]
+impl serdes_ai_agent::ToolExecutor<()> for InvokeAgentExecutor {
+    async fn execute(
+        &self,
+        args: JsonValue,
+        _ctx: &serdes_ai_agent::RunContext<()>,
+    ) -> Result<ToolReturn, ToolError> {
+        #[derive(serde::Deserialize)]
+        struct Args {
+            agent_name: String,
+            prompt: String,
+            #[serde(default)]
+            session_id: Option<String>,
+        }
+
+        let args: Args = serde_json::from_value(args.clone()).map_err(|e| {
+            ToolError::execution_failed(format!("Invalid arguments: {}", e))
+        })?;
+
+        debug!(agent = %args.agent_name, "Invoking sub-agent");
+
+        // Clone the data we need for the blocking task
+        let db_path = self.db_path.clone();
+        let current_model = self.current_model.clone();
+        let agent_name = args.agent_name.clone();
+        let prompt = args.prompt.clone();
+        let session_id = args.session_id.clone();
+        let bus = self.bus.clone(); // Clone bus for the spawned task
+
+        // Run the agent in a blocking context to handle the non-Send Database
+        let result = tokio::task::spawn_blocking(move || {
+            // Create a new runtime for the blocking task
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("Failed to create runtime: {}", e))?;
+
+            rt.block_on(async {
+                // Open a fresh database connection
+                let db = Database::open_at(db_path)
+                    .map_err(|e| format!("Failed to open database: {}", e))?;
+
+                // Load fresh registries
+                let model_registry = ModelRegistry::load_from_db(&db).unwrap_or_default();
+                let agent_manager = AgentManager::new();
+                let tool_registry = SpotToolRegistry::new();
+                let mcp_manager = McpManager::new();
+
+                // Find the agent
+                let agent = agent_manager
+                    .get(&agent_name)
+                    .ok_or_else(|| format!("Agent not found: {}", agent_name))?;
+
+                // Get the effective model for this agent (pinned or current)
+                let effective_model = {
+                    let settings = Settings::new(&db);
+                    settings
+                        .get_agent_pinned_model(&agent_name)
+                        .unwrap_or_else(|| current_model.clone())
+                };
+
+                // Create executor - with bus if available for visible sub-agent output
+                let executor = AgentExecutor::new(&db, &model_registry);
+
+                let result = if let Some(bus) = bus {
+                    // Use execute_with_bus - events flow to the same bus!
+                    executor
+                        .with_bus(bus)
+                        .execute_with_bus(
+                            agent,
+                            &effective_model,
+                            &prompt,
+                            None,
+                            &tool_registry,
+                            &mcp_manager,
+                        )
+                        .await
+                        .map_err(|e| format!("Agent execution failed: {}", e))?
+                } else {
+                    // Legacy: no bus, sub-agent output only in response
+                    executor
+                        .execute(
+                            agent,
+                            &effective_model,
+                            &prompt,
+                            None,
+                            &tool_registry,
+                            &mcp_manager,
+                        )
+                        .await
+                        .map_err(|e| format!("Agent execution failed: {}", e))?
+                };
+
+                Ok::<_, String>((result.output, result.run_id))
+            })
+        })
+        .await
+        .map_err(|e| ToolError::execution_failed(format!("Task join error: {}", e)))?
+        .map_err(|e| ToolError::execution_failed(e))?;
+
+        Ok(ToolReturn::json(serde_json::json!({
+            "agent": args.agent_name,
+            "response": result.0,
+            "session_id": session_id.or(Some(result.1)),
+            "success": true
+        })))
+    }
+}
+
+/// Executor for list_agents that returns available agents.
+struct ListAgentsExecutor {
+    db_path: std::path::PathBuf,
+}
+
+impl ListAgentsExecutor {
+    fn new(db: &Database) -> Self {
+        Self {
+            db_path: db.path().to_path_buf(),
+        }
+    }
+
+    fn definition() -> ToolDefinition {
+        ToolDefinition::new(
+            "list_agents",
+            "List all available agents that can be invoked.",
+        )
+    }
+}
+
+#[async_trait]
+impl serdes_ai_agent::ToolExecutor<()> for ListAgentsExecutor {
+    async fn execute(
+        &self,
+        _args: JsonValue,
+        _ctx: &serdes_ai_agent::RunContext<()>,
+    ) -> Result<ToolReturn, ToolError> {
+        // Open database and list agents (we don't actually need db for listing)
+        let agent_manager = AgentManager::new();
+        let agents: Vec<_> = agent_manager
+            .list()
+            .iter()
+            .map(|info| serde_json::json!({
+                "name": info.name,
+                "display_name": info.display_name,
+                "description": info.description
+            }))
+            .collect();
+
+        Ok(ToolReturn::json(serde_json::json!({
+            "agents": agents,
+            "count": agents.len()
+        })))
+    }
+}
+
 /// Executor for running SpotAgents with serdesAI's agent loop.
 ///
 /// This replaces raw model calls with proper agent execution including:
@@ -112,12 +302,55 @@ impl serdes_ai_agent::ToolExecutor<()> for ToolExecutorAdapter {
 pub struct AgentExecutor<'a> {
     db: &'a Database,
     registry: &'a ModelRegistry,
+    /// Optional message bus for event publishing.
+    bus: Option<MessageSender>,
 }
 
 impl<'a> AgentExecutor<'a> {
     /// Create a new executor with database access (for OAuth tokens) and model registry.
     pub fn new(db: &'a Database, registry: &'a ModelRegistry) -> Self {
-        Self { db, registry }
+        Self { db, registry, bus: None }
+    }
+
+    /// Add message bus for event publishing.
+    ///
+    /// When a bus is configured, sub-agent invocations will publish their
+    /// events to the same bus, making nested agent output visible.
+    pub fn with_bus(mut self, sender: MessageSender) -> Self {
+        self.bus = Some(sender);
+        self
+    }
+
+    /// Filter tool names based on settings.
+    /// 
+    /// Filters out:
+    /// - `share_your_reasoning` unless `show_reasoning` is enabled
+    /// - `invoke_agent` and `list_agents` (these use custom executors)
+    fn filter_tools<'b>(&self, tool_names: Vec<&'b str>) -> Vec<&'b str> {
+        let settings = Settings::new(self.db);
+        let show_reasoning = settings.get_bool("show_reasoning").unwrap_or(false);
+        
+        tool_names
+            .into_iter()
+            .filter(|name| {
+                match *name {
+                    "share_your_reasoning" => show_reasoning,
+                    // These are handled by custom executors, not the registry
+                    "invoke_agent" | "list_agents" => false,
+                    _ => true,
+                }
+            })
+            .collect()
+    }
+
+    /// Check if agent wants invoke_agent tool.
+    fn wants_invoke_agent(&self, tool_names: &[&str]) -> bool {
+        tool_names.contains(&"invoke_agent")
+    }
+
+    /// Check if agent wants list_agents tool.
+    fn wants_list_agents(&self, tool_names: &[&str]) -> bool {
+        tool_names.contains(&"list_agents")
     }
 
     /// Execute an agent with a prompt (blocking mode).
@@ -137,8 +370,13 @@ impl<'a> AgentExecutor<'a> {
         let model = get_model(self.db, model_name, self.registry).await?;
         let wrapped_model = ArcModel(model);
         
-        // Get the tools this agent should have access to
-        let tool_names = spot_agent.available_tools();
+        // Get original tool list (before filtering) to check for special tools
+        let original_tools = spot_agent.available_tools();
+        let wants_invoke = self.wants_invoke_agent(&original_tools);
+        let wants_list = self.wants_list_agents(&original_tools);
+        
+        // Get the tools this agent should have access to (filtered by settings)
+        let tool_names = self.filter_tools(original_tools);
         let tools = tool_registry.tools_by_name(&tool_names);
         
         // Build the serdesAI agent
@@ -153,6 +391,27 @@ impl<'a> AgentExecutor<'a> {
             builder = builder.tool_with_executor(
                 def,
                 ToolExecutorAdapter::new(Arc::clone(&tool)),
+            );
+        }
+        
+        // Add invoke_agent with custom executor (has database access)
+        if wants_invoke {
+            let invoke_executor = if let Some(ref bus) = self.bus {
+                InvokeAgentExecutor::new(self.db, model_name, bus.clone())
+            } else {
+                InvokeAgentExecutor::new_legacy(self.db, model_name)
+            };
+            builder = builder.tool_with_executor(
+                InvokeAgentExecutor::definition(),
+                invoke_executor,
+            );
+        }
+        
+        // Add list_agents with custom executor
+        if wants_list {
+            builder = builder.tool_with_executor(
+                ListAgentsExecutor::definition(),
+                ListAgentsExecutor::new(self.db),
             );
         }
         
@@ -184,7 +443,97 @@ impl<'a> AgentExecutor<'a> {
         })
     }
 
+    /// Execute agent with events published to message bus.
+    ///
+    /// This is the preferred method when you have a UI that subscribes
+    /// to the message bus. All streaming events are converted to Messages
+    /// and published, allowing sub-agents to also be visible.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no message bus is configured (use `with_bus()` first).
+    pub async fn execute_with_bus(
+        &self,
+        spot_agent: &dyn SpotAgent,
+        model_name: &str,
+        prompt: &str,
+        message_history: Option<Vec<ModelRequest>>,
+        tool_registry: &SpotToolRegistry,
+        mcp_manager: &McpManager,
+    ) -> Result<ExecutorResult, ExecutorError> {
+        let bus = self.bus.as_ref().ok_or(ExecutorError::Config(
+            "No message bus configured. Use with_bus() first.".into(),
+        ))?;
+
+        // Create event bridge for this agent
+        let mut bridge = EventBridge::new(
+            bus.clone(),
+            spot_agent.name(),
+            spot_agent.display_name(),
+        );
+
+        bridge.agent_started();
+
+        // Use internal streaming execution
+        let mut stream = self
+            .execute_stream(
+                spot_agent,
+                model_name,
+                prompt,
+                message_history,
+                tool_registry,
+                mcp_manager,
+            )
+            .await?;
+
+        // Accumulate text for the final output (since RunComplete only has run_id)
+        let mut accumulated_text = String::new();
+        let mut final_run_id: Option<String> = None;
+
+        // Process all events through the bridge
+        while let Some(event_result) = stream.recv().await {
+            match event_result {
+                Ok(event) => {
+                    // Capture text deltas for final output
+                    if let StreamEvent::TextDelta { ref text } = event {
+                        accumulated_text.push_str(text);
+                    }
+
+                    // Capture run_id from RunComplete
+                    if let StreamEvent::RunComplete { ref run_id } = event {
+                        final_run_id = Some(run_id.clone());
+                    }
+
+                    bridge.process(event);
+                }
+                Err(e) => {
+                    bridge.agent_error(&e.to_string());
+                    return Err(e);
+                }
+            }
+        }
+
+        // Get the run_id (from RunComplete event)
+        let run_id = final_run_id.ok_or_else(|| {
+            ExecutorError::Execution("Stream ended without RunComplete event".into())
+        })?;
+
+        bridge.agent_completed(&run_id);
+
+        // Note: In streaming mode, we don't have access to the full message history.
+        // For sub-agent invocation, this is acceptable - the main agent tracks its own history.
+        Ok(ExecutorResult {
+            output: accumulated_text,
+            messages: Vec::new(), // Not available in streaming mode
+            run_id,
+        })
+    }
+
     /// Execute an agent with streaming output.
+    ///
+    /// **Note**: For new code, prefer [`execute_with_bus`] which automatically
+    /// publishes events to a message bus that renderers can subscribe to.
+    /// This method is useful when you need direct control over event handling.
     ///
     /// Returns a stream receiver for consuming events in real-time.
     /// Uses a channel internally to handle the lifetime issues with agent streams.
@@ -213,8 +562,13 @@ impl<'a> AgentExecutor<'a> {
         // Get the model (handles OAuth models and custom endpoints)
         let model = get_model(self.db, model_name, self.registry).await?;
 
-        // Get the tools this agent should have access to
-        let tool_names = spot_agent.available_tools();
+        // Get original tool list (before filtering) to check for special tools
+        let original_tools = spot_agent.available_tools();
+        let wants_invoke = self.wants_invoke_agent(&original_tools);
+        let wants_list = self.wants_list_agents(&original_tools);
+        
+        // Get the tools this agent should have access to (filtered by settings)
+        let tool_names = self.filter_tools(original_tools);
         let tools = tool_registry.tools_by_name(&tool_names);
         
         // Collect tool definitions and Arc references
@@ -231,6 +585,9 @@ impl<'a> AgentExecutor<'a> {
         // Prepare data for the spawned task
         let system_prompt = spot_agent.system_prompt();
         let prompt = prompt.to_string();
+        let model_name_owned = model_name.to_string();
+        let db_path = self.db.path().to_path_buf();
+        let bus = self.bus.clone(); // Clone bus for sub-agent visibility
         let (tx, rx) = mpsc::channel(32);
         
         debug!(tool_count = tool_data.len(), "Spawning streaming task");
@@ -254,6 +611,27 @@ impl<'a> AgentExecutor<'a> {
                 builder = builder.tool_with_executor(
                     def,
                     ToolExecutorAdapter::new(tool),
+                );
+            }
+            
+            // Add invoke_agent with custom executor (has database access)
+            if wants_invoke {
+                let invoke_executor = InvokeAgentExecutor {
+                    db_path: db_path.clone(),
+                    current_model: model_name_owned.clone(),
+                    bus: bus.clone(), // Pass bus for sub-agent visibility
+                };
+                builder = builder.tool_with_executor(
+                    InvokeAgentExecutor::definition(),
+                    invoke_executor,
+                );
+            }
+            
+            // Add list_agents with custom executor
+            if wants_list {
+                builder = builder.tool_with_executor(
+                    ListAgentsExecutor::definition(),
+                    ListAgentsExecutor { db_path: db_path.clone() },
                 );
             }
             
@@ -392,8 +770,20 @@ pub async fn get_model(
 
     // First, check if we have a custom config for this model in the registry
     if let Some(config) = registry.get(model_name) {
+        debug!(
+            model_name = %model_name,
+            model_type = %config.model_type,
+            has_custom_endpoint = config.custom_endpoint.is_some(),
+            "Found model in registry"
+        );
+        
         // Handle custom endpoint models (e.g., from models.dev)
         if let Some(endpoint) = &config.custom_endpoint {
+            debug!(
+                endpoint_url = %endpoint.url,
+                has_api_key = endpoint.api_key.is_some(),
+                "Custom endpoint details"
+            );
             debug!("Using custom endpoint for model: {}", model_name);
 
             // Resolve the API key from database or environment
@@ -479,6 +869,20 @@ pub async fn get_model(
             })?;
         info!(model_id = %model.identifier(), "Claude Code OAuth model ready");
         return Ok(Arc::new(model));
+    }
+
+    // Check if this looks like a custom model (provider:model format)
+    // If so, it should have been in the registry - error out
+    if model_name.contains(':') && !model_name.starts_with("claude-code") {
+        warn!(
+            model_name = %model_name,
+            registry_count = registry.len(),
+            "Custom model not found in registry"
+        );
+        return Err(ExecutorError::Config(format!(
+            "Model '{}' not found in registry. Did you add it with /add-model? Try running /add-model again.",
+            model_name
+        )));
     }
 
     // Standard model inference (uses API keys from environment)

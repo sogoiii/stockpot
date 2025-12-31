@@ -76,14 +76,13 @@ impl Tool for InvokeAgentTool {
             ToolError::execution_failed(format!("Invalid arguments: {}. Got: {}", e, args))
         })?;
 
-        // For now, return a helpful message about how this would work
-        // Full implementation requires access to Database and executor context
-        Ok(ToolReturn::json(serde_json::json!({
-            "status": "delegated",
-            "agent": args.agent_name,
-            "prompt": args.prompt,
-            "note": "Sub-agent invocation queued. Response will follow."
-        })))
+        // TODO: Full implementation requires access to Database and executor context
+        // For now, return an error explaining the limitation
+        Err(ToolError::execution_failed(format!(
+            "Sub-agent invocation is not yet fully implemented. \
+             To use the '{}' agent, switch to it with /agent {} and ask your question directly.",
+            args.agent_name, args.agent_name
+        )))
     }
 }
 

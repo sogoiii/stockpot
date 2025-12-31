@@ -6,7 +6,10 @@ use crate::cli::model_picker::{edit_model_settings, pick_agent, pick_model, show
 use crate::config::Settings;
 use crate::db::Database;
 use crate::mcp::McpManager;
-use crate::messaging::{Message, Spinner, TerminalRenderer};
+use crate::messaging::{
+    Message, MessageBus, Spinner, TerminalRenderer,
+    TerminalRenderer as MsgRenderer,
+};
 use crate::models::ModelRegistry;
 use crate::session::SessionManager;
 use crate::tools::SpotToolRegistry;
@@ -32,6 +35,8 @@ pub struct Repl<'a> {
     current_session: Option<String>,
     /// Model configuration registry
     model_registry: ModelRegistry,
+    /// Message bus for event-driven rendering
+    message_bus: MessageBus,
 }
 
 impl<'a> Repl<'a> {
@@ -51,6 +56,7 @@ impl<'a> Repl<'a> {
             session_manager: SessionManager::new(),
             current_session: None,
             model_registry: ModelRegistry::load_from_db(db).unwrap_or_default(),
+            message_bus: MessageBus::new(),
         }
     }
 
@@ -86,9 +92,18 @@ impl<'a> Repl<'a> {
         }
         self.start_mcp_servers().await;
         loop {
-            let prompt = SpotPrompt::new(
+            // Check for pinned model for current agent
+            let agent_name = self.agents.current_name();
+            let settings = Settings::new(self.db);
+            let (effective_model, is_pinned) = match settings.get_agent_pinned_model(&agent_name) {
+                Some(pinned) => (pinned, true),
+                None => (self.current_model.clone(), false),
+            };
+            
+            let prompt = SpotPrompt::with_pinned(
                 self.agents.current().map(|a| a.display_name()).unwrap_or("stockpot 🍲"),
-                &self.current_model,
+                &effective_model,
+                is_pinned,
             );
 
             match line_editor.read_line(&prompt) {
@@ -208,7 +223,7 @@ impl<'a> Repl<'a> {
                     println!("✅ Switched to model: \x1b[1;33m{}\x1b[0m", args);
                 }
             }
-            "models" => core::show_models(&self.current_model),
+            "models" => core::show_models(self.db, &self.model_registry, &self.current_model),
             "agent" | "a" => {
                 if args.is_empty() {
                     // Interactive picker
@@ -478,9 +493,130 @@ impl<'a> Repl<'a> {
         }
     }
 
-    /// Handle a regular prompt (send to agent with streaming).
+    /// Handle a regular prompt (send to agent).
+    ///
+    /// This uses the message bus architecture where all events flow through
+    /// the bus and are rendered by a subscriber.
     pub async fn handle_prompt(&mut self, prompt: &str) -> anyhow::Result<()> {
-        debug!(prompt_len = prompt.len(), "handle_prompt started");
+        self.handle_prompt_with_bus(prompt).await
+    }
+
+    /// Handle a prompt using the message bus architecture.
+    ///
+    /// This is the new approach where all events flow through the message bus
+    /// and are rendered by a subscriber. Much simpler than the old approach!
+    async fn handle_prompt_with_bus(&mut self, prompt: &str) -> anyhow::Result<()> {
+        debug!(prompt_len = prompt.len(), "handle_prompt_with_bus started");
+
+        let agent = self.agents.current()
+            .ok_or_else(|| anyhow::anyhow!("No agent selected"))?;
+        let agent_name = agent.name().to_string();
+
+        // Get effective model (respecting agent pins)
+        let effective_model = context::get_effective_model(
+            self.db,
+            &self.current_model,
+            &agent_name,
+        );
+
+        // Prepare history
+        let history = if self.message_history.is_empty() {
+            None
+        } else {
+            Some(self.message_history.clone())
+        };
+
+        // Get MCP tool count for display
+        let mcp_tools = self.mcp_manager.list_all_tools().await;
+        let mcp_tool_count: usize = mcp_tools.values().map(|v| v.len()).sum();
+        if mcp_tool_count > 0 {
+            debug!(mcp_tool_count, "MCP tools available");
+            println!("\n\x1b[2m[{} MCP tools available]\x1b[0m", mcp_tool_count);
+        }
+
+        info!(model = %effective_model, agent = %agent_name, "Starting request");
+
+        println!(); // Add spacing before spinner
+
+        // Start spinner
+        let spinner = Spinner::new();
+        let spinner_handle = spinner.start(format!("Thinking... [{}]", effective_model));
+
+        // Create executor with message bus
+        let executor = AgentExecutor::new(self.db, &self.model_registry)
+            .with_bus(self.message_bus.sender());
+
+        // Subscribe and create ready signal to avoid race condition
+        let mut receiver = self.message_bus.subscribe();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Spawn render task that stops spinner on first message
+        let render_handle = tokio::spawn(async move {
+            let renderer = MsgRenderer::new();
+
+            // Signal that we're ready to receive BEFORE waiting
+            let _ = ready_tx.send(());
+
+            // Wait for first message, stop spinner, then render
+            if let Ok(first_msg) = receiver.recv().await {
+                // Stop spinner before rendering anything
+                spinner_handle.stop().await;
+
+                // Render the first message
+                let _ = renderer.render(&first_msg);
+
+                // Continue with remaining messages
+                renderer.run_loop(receiver).await;
+            } else {
+                // No messages, just stop spinner
+                spinner_handle.stop().await;
+            }
+        });
+
+        // WAIT for render task to be ready before executing!
+        // This prevents the race condition where messages are sent
+        // before the render task is listening.
+        let _ = ready_rx.await;
+
+        // NOW safe to execute - render task is waiting for messages
+        let result = executor.execute_with_bus(
+            agent,
+            &effective_model,
+            prompt,
+            history,
+            &self.tool_registry,
+            &self.mcp_manager,
+        ).await;
+
+        // Give renderer a moment to finish processing, then abort if needed
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        render_handle.abort();
+
+        match result {
+            Ok(exec_result) => {
+                // Note: In streaming mode, messages may be empty
+                // The main agent still tracks history via the legacy path if needed
+                if !exec_result.messages.is_empty() {
+                    self.message_history = exec_result.messages;
+                }
+                println!(); // Add spacing after response
+                self.auto_save_session();
+            }
+            Err(e) => {
+                println!("\n\x1b[1;31m❌ Error:\x1b[0m {}\n", e);
+                self.show_error_hints(&e.to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Legacy prompt handling (direct stream processing).
+    ///
+    /// Kept for reference and fallback if needed.
+    #[allow(dead_code)]
+    async fn handle_prompt_legacy(&mut self, prompt: &str) -> anyhow::Result<()> {
+        debug!(prompt_len = prompt.len(), "handle_prompt_legacy started");
         
         let agent = self.agents.current()
             .ok_or_else(|| anyhow::anyhow!("No agent selected"))?;
@@ -534,6 +670,10 @@ impl<'a> Repl<'a> {
                 let recv_timeout = Duration::from_secs(120); // 2 minute timeout
                 let mut md_renderer = StreamingMarkdownRenderer::new();
                 
+                // Track current tool call for nicer output formatting
+                let mut current_tool: Option<String> = None;
+                let mut tool_args_buffer = String::new();
+                
                 loop {
                     // Use timeout to detect if we're stuck
                     let recv_result = timeout(recv_timeout, stream.recv()).await;
@@ -566,10 +706,8 @@ impl<'a> Repl<'a> {
                         Ok(event) => {
                             match event {
                                 StreamEvent::RunStart { .. } => {}
-                                StreamEvent::RequestStart { step } => {
-                                    if step > 1 {
-                                        println!("\n\x1b[2m[step {}]\x1b[0m", step);
-                                    }
+                                StreamEvent::RequestStart { step: _ } => {
+                                    // Silently continue - no step indicators needed
                                 }
                                 StreamEvent::TextDelta { text } => {
                                     // Stop spinner on first text
@@ -593,26 +731,90 @@ impl<'a> Repl<'a> {
                                     if let Some(ref handle) = spinner_handle {
                                         handle.pause();
                                     }
-                                    // Print tool name on its own line, args will follow
-                                    print!("\n\x1b[1;33m🔧 {}\x1b[0m ", tool_name);
+                                    // Track the current tool and reset args buffer
+                                    current_tool = Some(tool_name.clone());
+                                    tool_args_buffer.clear();
+                                    // Print tool name, args will follow after ToolCallComplete
+                                    print!("\n\x1b[2m{}\x1b[0m ", tool_name);
                                     let _ = stdout().flush();
                                 }
                                 StreamEvent::ToolCallDelta { delta } => {
-                                    // Show args being generated (dimmed)
-                                    print!("\x1b[2m{}\x1b[0m", delta);
-                                    let _ = stdout().flush();
+                                    // Accumulate args for later display
+                                    tool_args_buffer.push_str(&delta);
                                 }
                                 StreamEvent::ToolCallComplete { tool_name: _ } => {
-                                    // Don't print anything here - wait for ToolExecuted
-                                    // This event just means the model finished generating the call
+                                    // Now show the args in a nice format
+                                    if let Some(ref tool) = current_tool {
+                                        debug!(tool = %tool, args_buffer = %tool_args_buffer, "ToolCallComplete - parsing args");
+                                        // Try to parse args and show nicely
+                                        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&tool_args_buffer) {
+                                            debug!(parsed_args = %args, "Parsed tool args");
+                                            match tool.as_str() {
+                                                "read_file" => {
+                                                    if let Some(path) = args.get("file_path").and_then(|v| v.as_str()) {
+                                                        print!("\x1b[36m{}\x1b[0m", path);
+                                                    }
+                                                }
+                                                "list_files" => {
+                                                    if let Some(dir) = args.get("directory").and_then(|v| v.as_str()) {
+                                                        print!("\x1b[36m{}\x1b[0m", dir);
+                                                    }
+                                                }
+                                                "grep" => {
+                                                    if let Some(pattern) = args.get("pattern").and_then(|v| v.as_str()) {
+                                                        print!("\x1b[36m'{}'\x1b[0m", pattern);
+                                                    }
+                                                }
+                                                "agent_run_shell_command" | "run_shell_command" => {
+                                                    if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+                                                        // Truncate long commands
+                                                        let display_cmd = if cmd.len() > 60 {
+                                                            format!("{}...", &cmd[..57])
+                                                        } else {
+                                                            cmd.to_string()
+                                                        };
+                                                        print!("\x1b[36m{}\x1b[0m", display_cmd);
+                                                    }
+                                                }
+                                                _ => {
+                                                    // For other tools, show compact args
+                                                    let compact = args.to_string();
+                                                    if compact.len() > 80 {
+                                                        print!("\x1b[2m{}...\x1b[0m", &compact[..77]);
+                                                    } else {
+                                                        print!("\x1b[2m{}\x1b[0m", compact);
+                                                    }
+                                                }
+                                            }
+                                        } else if !tool_args_buffer.is_empty() {
+                                            // JSON parsing failed - show raw args
+                                            debug!(raw_args = %tool_args_buffer, "Failed to parse tool args as JSON");
+                                            let display = if tool_args_buffer.len() > 60 {
+                                                format!("{}...", &tool_args_buffer[..57])
+                                            } else {
+                                                tool_args_buffer.clone()
+                                            };
+                                            print!("\x1b[2m{}\x1b[0m", display);
+                                        }
+                                    }
+                                    let _ = stdout().flush();
                                 }
-                                StreamEvent::ToolExecuted { tool_name: _, success } => {
-                                    // Show result on same line as tool call
+                                StreamEvent::ToolExecuted { tool_name: _, success, error } => {
+                                    // Just end the line, show error if failed
                                     if success {
-                                        println!(" \x1b[1;32m✓\x1b[0m");
+                                        println!();
+                                    } else if let Some(err) = error {
+                                        // Show truncated error message
+                                        let short_err = if err.len() > 60 {
+                                            format!("{}...", &err[..57])
+                                        } else {
+                                            err
+                                        };
+                                        println!(" \x1b[1;31m✗ {}\x1b[0m", short_err);
                                     } else {
                                         println!(" \x1b[1;31m✗ failed\x1b[0m");
                                     }
+                                    current_tool = None;
                                     // Resume spinner after tool
                                     if let Some(ref handle) = spinner_handle {
                                         handle.resume();

@@ -108,6 +108,75 @@ pub enum InputType {
     Selection,
 }
 
+/// Agent lifecycle events (start, complete, error).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMessage {
+    pub agent_name: String,
+    pub display_name: String,
+    pub event: AgentEvent,
+}
+
+/// Agent lifecycle event types.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event_type", rename_all = "snake_case")]
+pub enum AgentEvent {
+    Started,
+    Completed { run_id: String },
+    Error { message: String },
+}
+
+/// Tool execution lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolMessage {
+    pub tool_name: String,
+    pub status: ToolStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Default for ToolMessage {
+    fn default() -> Self {
+        Self {
+            tool_name: String::new(),
+            status: ToolStatus::default(),
+            args: None,
+            result: None,
+            error: None,
+        }
+    }
+}
+
+/// Tool execution status.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    #[default]
+    Started,
+    ArgsStreaming,
+    Executing,
+    Completed,
+    Failed,
+}
+
+/// Streaming text from agent response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextDeltaMessage {
+    pub text: String,
+    /// For nested agent output identification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+}
+
+/// Thinking/reasoning delta.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingMessage {
+    pub text: String,
+}
+
 /// Any message type (for serialization).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -120,6 +189,10 @@ pub enum Message {
     Diff(DiffMessage),
     Spinner(SpinnerMessage),
     InputRequest(InputRequest),
+    Agent(AgentMessage),
+    Tool(ToolMessage),
+    TextDelta(TextDeltaMessage),
+    Thinking(ThinkingMessage),
     Divider,
     Clear,
 }
@@ -162,6 +235,98 @@ impl Message {
         Self::Response(ResponseMessage {
             content: content.into(),
             is_streaming: false,
+        })
+    }
+
+    /// Create an agent started message.
+    pub fn agent_started(name: &str, display_name: &str) -> Self {
+        Self::Agent(AgentMessage {
+            agent_name: name.to_string(),
+            display_name: display_name.to_string(),
+            event: AgentEvent::Started,
+        })
+    }
+
+    /// Create an agent completed message.
+    pub fn agent_completed(name: &str, display_name: &str, run_id: &str) -> Self {
+        Self::Agent(AgentMessage {
+            agent_name: name.to_string(),
+            display_name: display_name.to_string(),
+            event: AgentEvent::Completed {
+                run_id: run_id.to_string(),
+            },
+        })
+    }
+
+    /// Create an agent error message.
+    pub fn agent_error(name: &str, display_name: &str, error: &str) -> Self {
+        Self::Agent(AgentMessage {
+            agent_name: name.to_string(),
+            display_name: display_name.to_string(),
+            event: AgentEvent::Error {
+                message: error.to_string(),
+            },
+        })
+    }
+
+    /// Create a tool started message.
+    pub fn tool_started(tool_name: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            status: ToolStatus::Started,
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool executing message (with parsed args).
+    pub fn tool_executing(tool_name: &str, args: Option<serde_json::Value>) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            status: ToolStatus::Executing,
+            args,
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool completed message.
+    pub fn tool_completed(tool_name: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            status: ToolStatus::Completed,
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool failed message.
+    pub fn tool_failed(tool_name: &str, error: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            status: ToolStatus::Failed,
+            error: Some(error.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a text delta message.
+    pub fn text_delta(text: &str) -> Self {
+        Self::TextDelta(TextDeltaMessage {
+            text: text.to_string(),
+            agent_name: None,
+        })
+    }
+
+    /// Create a text delta from a specific agent.
+    pub fn text_delta_from(text: &str, agent_name: &str) -> Self {
+        Self::TextDelta(TextDeltaMessage {
+            text: text.to_string(),
+            agent_name: Some(agent_name.to_string()),
+        })
+    }
+
+    /// Create a thinking delta message.
+    pub fn thinking(text: &str) -> Self {
+        Self::Thinking(ThinkingMessage {
+            text: text.to_string(),
         })
     }
 }
