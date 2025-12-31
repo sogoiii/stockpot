@@ -24,6 +24,11 @@ serdes-ai-providers = { path = "../serdesAI/serdes-ai-providers", features = ["f
 serdes-ai-tools = { path = "../serdesAI/serdes-ai-tools" }
 serdes-ai-mcp = { path = "../serdesAI/serdes-ai-mcp" }
 
+# Markdown rendering
+streamdown-parser = { path = "../streamdown-rs/crates/streamdown-parser" }
+streamdown-render = { path = "../streamdown-rs/crates/streamdown-render" }
+streamdown-config = { path = "../streamdown-rs/crates/streamdown-config" }
+
 # CLI
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 reedline = "0.37"
@@ -71,6 +76,7 @@ webbrowser = "1.0"
 dialoguer = { version = "0.11", features = ["fuzzy-select"] }
 console = "0.15"
 shellexpand = "3.1"
+terminal_size = "0.4"
 
 [dev-dependencies]
 tempfile = "3.10"

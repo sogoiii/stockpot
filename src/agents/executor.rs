@@ -12,6 +12,7 @@ use crate::messaging::{EventBridge, MessageSender};
 use crate::models::{resolve_api_key, ModelRegistry, ModelType};
 use crate::tools::registry::SpotToolRegistry;
 use crate::tools::agent_tools::InvokeAgentTool;
+use crate::session::SessionManager;
 use tracing::{debug, error, info, warn};
 
 use serdes_ai_agent::{agent, RunOptions};
@@ -198,6 +199,21 @@ impl serdes_ai_agent::ToolExecutor<()> for InvokeAgentExecutor {
                         .unwrap_or_else(|| current_model.clone())
                 };
 
+                // Load session history if session_id provided
+                let session_manager = SessionManager::new();
+                let message_history = session_id.as_ref().and_then(|sid| {
+                    match session_manager.load(sid) {
+                        Ok(data) => {
+                            debug!(session_id = %sid, messages = data.messages.len(), "Loaded session history");
+                            Some(data.messages)
+                        }
+                        Err(e) => {
+                            debug!(session_id = %sid, error = %e, "No existing session, starting fresh");
+                            None
+                        }
+                    }
+                });
+
                 // Create executor - with bus if available for visible sub-agent output
                 let executor = AgentExecutor::new(&db, &model_registry);
 
@@ -209,7 +225,7 @@ impl serdes_ai_agent::ToolExecutor<()> for InvokeAgentExecutor {
                             agent,
                             &effective_model,
                             &prompt,
-                            None,
+                            message_history,
                             &tool_registry,
                             &mcp_manager,
                         )
@@ -222,7 +238,7 @@ impl serdes_ai_agent::ToolExecutor<()> for InvokeAgentExecutor {
                             agent,
                             &effective_model,
                             &prompt,
-                            None,
+                            message_history,
                             &tool_registry,
                             &mcp_manager,
                         )
@@ -230,7 +246,26 @@ impl serdes_ai_agent::ToolExecutor<()> for InvokeAgentExecutor {
                         .map_err(|e| format!("Agent execution failed: {}", e))?
                 };
 
-                Ok::<_, String>((result.output, result.run_id))
+                // Save session for future continuation
+                let final_session_id = session_id.clone().unwrap_or_else(|| {
+                    session_manager.generate_name(&agent_name)
+                });
+                
+                // Only save if we have messages (non-streaming mode returns them)
+                if !result.messages.is_empty() {
+                    if let Err(e) = session_manager.save(
+                        &final_session_id,
+                        &result.messages,
+                        &agent_name,
+                        &effective_model,
+                    ) {
+                        warn!(error = %e, "Failed to save session");
+                    } else {
+                        debug!(session_id = %final_session_id, messages = result.messages.len(), "Saved session");
+                    }
+                }
+
+                Ok::<_, String>((result.output, final_session_id))
             })
         })
         .await
@@ -240,7 +275,7 @@ impl serdes_ai_agent::ToolExecutor<()> for InvokeAgentExecutor {
         Ok(ToolReturn::json(serde_json::json!({
             "agent": args.agent_name,
             "response": result.0,
-            "session_id": session_id.or(Some(result.1)),
+            "session_id": result.1,  // Now returns the actual session_id used
             "success": true
         })))
     }
