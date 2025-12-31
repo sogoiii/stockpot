@@ -11,9 +11,9 @@ use crate::models::{ModelRegistry, ModelSettings};
 /// Show an interactive model picker, returns selected model name.
 ///
 /// Uses fuzzy search to filter through available models.
-pub fn pick_model(registry: &ModelRegistry, current: &str) -> Option<String> {
+pub fn pick_model(db: &Database, registry: &ModelRegistry, current: &str) -> Option<String> {
     // Only show models that have valid provider configuration (API keys or OAuth tokens)
-    let models: Vec<String> = registry.list_available();
+    let models: Vec<String> = registry.list_available(db);
 
     if models.is_empty() {
         println!("No models configured.");

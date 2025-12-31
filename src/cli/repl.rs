@@ -50,7 +50,7 @@ impl<'a> Repl<'a> {
             mcp_manager: McpManager::new(),
             session_manager: SessionManager::new(),
             current_session: None,
-            model_registry: ModelRegistry::load().unwrap_or_default(),
+            model_registry: ModelRegistry::load_from_db(db).unwrap_or_default(),
         }
     }
 
@@ -75,7 +75,7 @@ impl<'a> Repl<'a> {
         completer.set_agents(self.agents.list().iter().map(|a| a.name.clone()).collect());
         completer.set_sessions(self.session_manager.list().unwrap_or_default().into_iter().map(|s| s.name).collect());
         completer.set_mcp_servers(self.mcp_manager.config().servers.keys().cloned().collect());
-        completer.set_models(self.model_registry.list_available());
+        completer.set_models(self.model_registry.list_available(self.db));
 
         let mut line_editor = create_reedline(completer);
         // Load history
@@ -194,7 +194,7 @@ impl<'a> Repl<'a> {
             "model" | "m" => {
                 if args.is_empty() {
                     // Interactive picker
-                    if let Some(selected) = pick_model(&self.model_registry, &self.current_model) {
+                    if let Some(selected) = pick_model(self.db, &self.model_registry, &self.current_model) {
                         self.current_model = selected.clone();
                         let settings = Settings::new(self.db);
                         let _ = settings.set("model", &selected);
@@ -246,7 +246,7 @@ impl<'a> Repl<'a> {
             "version" | "v" => core::cmd_version(),
             "chatgpt-auth" => match crate::auth::run_chatgpt_auth(self.db).await {
                 Ok(_) => {
-                    if let Err(e) = self.model_registry.reload() {
+                    if let Err(e) = self.model_registry.reload_from_db(self.db) {
                         println!("⚠️  Failed to reload models: {}", e);
                     }
                     println!();
@@ -257,7 +257,7 @@ impl<'a> Repl<'a> {
             },
             "claude-code-auth" => match crate::auth::run_claude_code_auth(self.db).await {
                 Ok(_) => {
-                    if let Err(e) = self.model_registry.reload() {
+                    if let Err(e) = self.model_registry.reload_from_db(self.db) {
                         println!("⚠️  Failed to reload models: {}", e);
                     }
                     println!();
@@ -266,11 +266,24 @@ impl<'a> Repl<'a> {
                 }
                 Err(e) => println!("❌ Claude Code auth failed: {}", e),
             },
-            "add-model" | "add_model" => if let Err(e) = super::add_model::run_add_model().await {
-                println!("❌ Failed to add model: {}", e);
-            },
-            "extra-models" | "extra_models" => if let Err(e) = super::add_model::list_extra_models() {
-                println!("❌ Failed to list models: {}", e);
+            "add-model" | "add_model" => {
+                match super::add_model::run_add_model(self.db).await {
+                    Ok(()) => {
+                        // Reload registry to pick up the new model
+                        if let Err(e) = self.model_registry.reload_from_db(self.db) {
+                            println!("\x1b[33m⚠️  Failed to reload models: {}\x1b[0m", e);
+                        }
+                        // Update completer with new models
+                        // Note: completer is owned by line_editor, so we can't update it here
+                        // The user can restart or the completer will be updated on next run
+                    }
+                    Err(e) => println!("❌ Failed to add model: {}", e),
+                }
+            }
+            "extra-models" | "extra_models" => {
+                if let Err(e) = super::add_model::list_custom_models(self.db) {
+                    println!("❌ Failed to list models: {}", e);
+                }
             }
             // Session commands
             "save" => if let Some(name) = session::save(&self.session_manager, &self.agents, &self.message_history, &self.current_model, args) {
@@ -478,7 +491,7 @@ impl<'a> Repl<'a> {
         
         println!();
         
-        let executor = AgentExecutor::new(self.db);
+        let executor = AgentExecutor::new(self.db, &self.model_registry);
         let history = if self.message_history.is_empty() { None } else { Some(self.message_history.clone()) };
         
         debug!(history_messages = history.as_ref().map(|h| h.len()).unwrap_or(0), "Message history");
@@ -580,24 +593,29 @@ impl<'a> Repl<'a> {
                                     if let Some(ref handle) = spinner_handle {
                                         handle.pause();
                                     }
-                                    println!("\n\x1b[1;33m🔧 Calling {}...\x1b[0m", tool_name);
+                                    // Print tool name on its own line, args will follow
+                                    print!("\n\x1b[1;33m🔧 {}\x1b[0m ", tool_name);
+                                    let _ = stdout().flush();
                                 }
                                 StreamEvent::ToolCallDelta { delta } => {
+                                    // Show args being generated (dimmed)
                                     print!("\x1b[2m{}\x1b[0m", delta);
                                     let _ = stdout().flush();
                                 }
-                                StreamEvent::ToolCallComplete { tool_name } => {
-                                    println!("\x1b[1;32m✅ {} done\x1b[0m\n", tool_name);
+                                StreamEvent::ToolCallComplete { tool_name: _ } => {
+                                    // Don't print anything here - wait for ToolExecuted
+                                    // This event just means the model finished generating the call
+                                }
+                                StreamEvent::ToolExecuted { tool_name: _, success } => {
+                                    // Show result on same line as tool call
+                                    if success {
+                                        println!(" \x1b[1;32m✓\x1b[0m");
+                                    } else {
+                                        println!(" \x1b[1;31m✗ failed\x1b[0m");
+                                    }
                                     // Resume spinner after tool
                                     if let Some(ref handle) = spinner_handle {
                                         handle.resume();
-                                    }
-                                }
-                                StreamEvent::ToolExecuted { tool_name, success } => {
-                                    if success {
-                                        println!("\x1b[2m   {} executed\x1b[0m", tool_name);
-                                    } else {
-                                        println!("\x1b[1;31m   {} failed\x1b[0m", tool_name);
                                     }
                                 }
                                 StreamEvent::ThinkingDelta { text } => {

@@ -22,10 +22,11 @@
 //! ## Quick Start
 //!
 //! ```ignore
-//! use stockpot::{Database, AgentExecutor, SessionManager};
+//! use stockpot::{Database, AgentExecutor, SessionManager, ModelRegistry};
 //!
 //! let db = Database::open()?;
-//! let executor = AgentExecutor::new(&db);
+//! let registry = ModelRegistry::load_from_db(&db)?;
+//! let executor = AgentExecutor::new(&db, &registry);
 //! let sessions = SessionManager::new();
 //! ```
 

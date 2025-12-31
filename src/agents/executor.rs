@@ -4,15 +4,19 @@
 //! serdesAI's agent loop with proper tool calling and streaming support.
 
 use crate::agents::SpotAgent;
-use tracing::{debug, info, error, warn};
 use crate::auth;
 use crate::db::Database;
 use crate::mcp::McpManager;
+use crate::models::{resolve_api_key, ModelRegistry, ModelType};
 use crate::tools::registry::SpotToolRegistry;
+use tracing::{debug, error, info, warn};
 
 use serdes_ai_agent::{agent, RunOptions};
 use serdes_ai_core::{ModelRequest, ModelResponse, ModelSettings};
-use serdes_ai_models::{infer_model, Model, ModelError, ModelRequestParameters, StreamedResponse, ModelProfile};
+use serdes_ai_models::{
+    infer_model, Model, ModelError, ModelProfile, ModelRequestParameters, StreamedResponse,
+    openai::OpenAIChatModel,
+};
 use serdes_ai_tools::{Tool, ToolDefinition, ToolReturn, ToolError, RunContext};
 
 use async_trait::async_trait;
@@ -99,7 +103,7 @@ impl serdes_ai_agent::ToolExecutor<()> for ToolExecutorAdapter {
 }
 
 /// Executor for running SpotAgents with serdesAI's agent loop.
-/// 
+///
 /// This replaces raw model calls with proper agent execution including:
 /// - Tool calling and execution loop
 /// - Streaming support
@@ -107,16 +111,17 @@ impl serdes_ai_agent::ToolExecutor<()> for ToolExecutorAdapter {
 /// - Retry logic
 pub struct AgentExecutor<'a> {
     db: &'a Database,
+    registry: &'a ModelRegistry,
 }
 
 impl<'a> AgentExecutor<'a> {
-    /// Create a new executor with database access (for OAuth tokens).
-    pub fn new(db: &'a Database) -> Self {
-        Self { db }
+    /// Create a new executor with database access (for OAuth tokens) and model registry.
+    pub fn new(db: &'a Database, registry: &'a ModelRegistry) -> Self {
+        Self { db, registry }
     }
 
     /// Execute an agent with a prompt (blocking mode).
-    /// 
+    ///
     /// This runs the full agent loop including tool calls until completion.
     /// Returns the final output and message history for context.
     pub async fn execute(
@@ -125,16 +130,16 @@ impl<'a> AgentExecutor<'a> {
         model_name: &str,
         prompt: &str,
         message_history: Option<Vec<ModelRequest>>,
-        registry: &SpotToolRegistry,
+        tool_registry: &SpotToolRegistry,
         _mcp_manager: &McpManager,
     ) -> Result<ExecutorResult, ExecutorError> {
-        // Get the model (handles OAuth models)
-        let model = get_model(self.db, model_name).await?;
+        // Get the model (handles OAuth models and custom endpoints)
+        let model = get_model(self.db, model_name, self.registry).await?;
         let wrapped_model = ArcModel(model);
         
         // Get the tools this agent should have access to
         let tool_names = spot_agent.available_tools();
-        let tools = registry.tools_by_name(&tool_names);
+        let tools = tool_registry.tools_by_name(&tool_names);
         
         // Build the serdesAI agent
         let mut builder = agent(wrapped_model)
@@ -180,10 +185,10 @@ impl<'a> AgentExecutor<'a> {
     }
 
     /// Execute an agent with streaming output.
-    /// 
+    ///
     /// Returns a stream receiver for consuming events in real-time.
     /// Uses a channel internally to handle the lifetime issues with agent streams.
-    /// 
+    ///
     /// # Example
     /// ```ignore
     /// let registry = SpotToolRegistry::new();
@@ -202,15 +207,15 @@ impl<'a> AgentExecutor<'a> {
         model_name: &str,
         prompt: &str,
         message_history: Option<Vec<ModelRequest>>,
-        registry: &SpotToolRegistry,
+        tool_registry: &SpotToolRegistry,
         mcp_manager: &McpManager,
     ) -> Result<ExecutorStreamReceiver, ExecutorError> {
-        // Get the model (handles OAuth models)
-        let model = get_model(self.db, model_name).await?;
-        
+        // Get the model (handles OAuth models and custom endpoints)
+        let model = get_model(self.db, model_name, self.registry).await?;
+
         // Get the tools this agent should have access to
         let tool_names = spot_agent.available_tools();
-        let tools = registry.tools_by_name(&tool_names);
+        let tools = tool_registry.tools_by_name(&tool_names);
         
         // Collect tool definitions and Arc references
         // We need to move these into the spawned task
@@ -374,17 +379,88 @@ impl ExecutorStreamReceiver {
     }
 }
 
-/// Get a model by name, handling OAuth models specially.
-/// 
-/// OAuth models (chatgpt-*, claude-code-*) require token refresh,
-/// so we handle them separately from standard API key models.
-pub async fn get_model(db: &Database, model_name: &str) -> Result<Arc<dyn Model>, ExecutorError> {
+/// Get a model by name, handling custom endpoints, OAuth models, and standard models.
+///
+/// This function checks the model registry first for custom configurations,
+/// then falls back to OAuth detection by prefix, and finally standard inference.
+pub async fn get_model(
+    db: &Database,
+    model_name: &str,
+    registry: &ModelRegistry,
+) -> Result<Arc<dyn Model>, ExecutorError> {
     debug!(model_name = %model_name, "get_model called");
-    
-    // Check for OAuth models
+
+    // First, check if we have a custom config for this model in the registry
+    if let Some(config) = registry.get(model_name) {
+        // Handle custom endpoint models (e.g., from models.dev)
+        if let Some(endpoint) = &config.custom_endpoint {
+            debug!("Using custom endpoint for model: {}", model_name);
+
+            // Resolve the API key from database or environment
+            let api_key = if let Some(ref key_template) = endpoint.api_key {
+                if key_template.starts_with('$') {
+                    // It's an env var reference like $API_KEY or ${API_KEY}
+                    let var_name = key_template
+                        .trim_start_matches('$')
+                        .trim_matches(|c| c == '{' || c == '}');
+                    // Check database first, then environment
+                    resolve_api_key(db, var_name).ok_or_else(|| {
+                        ExecutorError::Config(format!(
+                            "API key {} not found. Run /add_model to configure it, or set the environment variable.",
+                            var_name
+                        ))
+                    })?
+                } else {
+                    // It's a literal key
+                    key_template.clone()
+                }
+            } else {
+                return Err(ExecutorError::Config(format!(
+                    "Model {} has custom endpoint but no API key configured",
+                    model_name
+                )));
+            };
+
+            // Get the actual model ID to send to the API
+            let model_id = config.model_id.as_deref().unwrap_or(model_name);
+
+            // Create OpenAI-compatible model with custom endpoint
+            let model = OpenAIChatModel::new(model_id, api_key).with_base_url(&endpoint.url);
+
+            info!(
+                model_name = %model_name,
+                endpoint = %endpoint.url,
+                "Custom endpoint model ready"
+            );
+            return Ok(Arc::new(model));
+        }
+
+        // Handle based on model type for non-custom-endpoint models
+        match config.model_type {
+            ModelType::ClaudeCode => {
+                debug!("Detected Claude Code OAuth model from config");
+                let model = auth::get_claude_code_model(db, model_name)
+                    .await
+                    .map_err(|e| ExecutorError::Auth(e.to_string()))?;
+                return Ok(Arc::new(model));
+            }
+            ModelType::ChatgptOauth => {
+                debug!("Detected ChatGPT OAuth model from config");
+                let model = auth::get_chatgpt_model(db, model_name)
+                    .await
+                    .map_err(|e| ExecutorError::Auth(e.to_string()))?;
+                return Ok(Arc::new(model));
+            }
+            // For other types, fall through to standard handling
+            _ => {}
+        }
+    }
+
+    // Legacy: Check for OAuth models by prefix (backward compatibility)
     if model_name.starts_with("chatgpt-") || model_name.starts_with("chatgpt_") {
-        debug!("Detected ChatGPT OAuth model, fetching token...");
-        let model = auth::get_chatgpt_model(db, model_name).await
+        debug!("Detected ChatGPT OAuth model by prefix");
+        let model = auth::get_chatgpt_model(db, model_name)
+            .await
             .map_err(|e| {
                 error!(error = %e, "Failed to get ChatGPT model");
                 ExecutorError::Auth(e.to_string())
@@ -392,10 +468,11 @@ pub async fn get_model(db: &Database, model_name: &str) -> Result<Arc<dyn Model>
         info!(model_id = %model.identifier(), "ChatGPT OAuth model ready");
         return Ok(Arc::new(model));
     }
-    
+
     if model_name.starts_with("claude-code-") || model_name.starts_with("claude_code_") {
-        debug!("Detected Claude Code OAuth model, fetching token...");
-        let model = auth::get_claude_code_model(db, model_name).await
+        debug!("Detected Claude Code OAuth model by prefix");
+        let model = auth::get_claude_code_model(db, model_name)
+            .await
             .map_err(|e| {
                 error!(error = %e, "Failed to get Claude Code model");
                 ExecutorError::Auth(e.to_string())
@@ -403,21 +480,20 @@ pub async fn get_model(db: &Database, model_name: &str) -> Result<Arc<dyn Model>
         info!(model_id = %model.identifier(), "Claude Code OAuth model ready");
         return Ok(Arc::new(model));
     }
-    
-    // Try to infer model from name (uses API keys from environment)
-    debug!("Using API key model inference");
-    let model = infer_model(model_name)
-        .map_err(|e| {
-            error!(error = %e, "Failed to infer model");
-            ExecutorError::Model(e.to_string())
-        })?;
-    
+
+    // Standard model inference (uses API keys from environment)
+    debug!("Using API key model inference for: {}", model_name);
+    let model = infer_model(model_name).map_err(|e| {
+        error!(error = %e, "Failed to infer model");
+        ExecutorError::Model(e.to_string())
+    })?;
+
     info!(model_name = %model_name, "Model ready");
     Ok(model)
 }
 
 /// Legacy execute_agent function for backwards compatibility.
-/// 
+///
 /// Prefer using `AgentExecutor` directly for new code.
 #[deprecated(since = "0.2.0", note = "Use AgentExecutor::execute() instead")]
 pub async fn execute_agent(
@@ -427,22 +503,32 @@ pub async fn execute_agent(
     prompt: &str,
     message_history: &mut Vec<ModelRequest>,
 ) -> Result<String, ExecutorError> {
-    let executor = AgentExecutor::new(db);
-    let registry = SpotToolRegistry::new();
+    let model_registry = ModelRegistry::load_from_db(db).unwrap_or_default();
+    let executor = AgentExecutor::new(db, &model_registry);
+    let tool_registry = SpotToolRegistry::new();
     let mcp_manager = McpManager::new();
-    
+
     // Convert mutable history to owned
     let history = if message_history.is_empty() {
         None
     } else {
         Some(message_history.clone())
     };
-    
-    let result = executor.execute(agent, model_name, prompt, history, &registry, &mcp_manager).await?;
-    
+
+    let result = executor
+        .execute(
+            agent,
+            model_name,
+            prompt,
+            history,
+            &tool_registry,
+            &mcp_manager,
+        )
+        .await?;
+
     // Update the caller's history
     *message_history = result.messages;
-    
+
     Ok(result.output)
 }
 
@@ -557,4 +643,6 @@ pub enum ExecutorError {
     Tool(String),
     #[error("Execution error: {0}")]
     Execution(String),
+    #[error("Configuration error: {0}")]
+    Config(String),
 }

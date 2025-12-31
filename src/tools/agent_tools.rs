@@ -2,16 +2,18 @@
 //!
 //! These tools allow agents to delegate tasks to other specialized agents.
 
-use crate::agents::{AgentManager, AgentExecutor};
+use crate::agents::{AgentExecutor, AgentManager};
 use crate::db::Database;
 use crate::mcp::McpManager;
+use crate::models::ModelRegistry;
 use crate::tools::SpotToolRegistry;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use serdes_ai_tools::{
-    Tool, ToolDefinition, ToolReturn, ToolResult, ToolError, SchemaBuilder, RunContext,
+    RunContext, SchemaBuilder, Tool, ToolDefinition, ToolError, ToolResult, ToolReturn,
 };
+use tracing::{debug, warn};
 
 // ============================================================================
 // InvokeAgentTool
@@ -67,8 +69,12 @@ impl Tool for InvokeAgentTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: InvokeAgentArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "invoke_agent", ?args, "Tool called");
+
+        let args: InvokeAgentArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "invoke_agent", error = %e, ?args, "Failed to parse arguments");
+            ToolError::execution_failed(format!("Invalid arguments: {}. Got: {}", e, args))
+        })?;
 
         // For now, return a helpful message about how this would work
         // Full implementation requires access to Database and executor context
@@ -106,7 +112,9 @@ impl Tool for ListAgentsTool {
         )
     }
 
-    async fn call(&self, _ctx: &RunContext, _args: JsonValue) -> ToolResult {
+    async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
+        debug!(tool = "list_agents", ?args, "Tool called");
+
         // Create a temporary manager to list agents
         let manager = AgentManager::new();
         let agents = manager.list();
@@ -171,8 +179,12 @@ impl Tool for ShareReasoningTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: ShareReasoningArgs = serde_json::from_value(args)
-            .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "share_reasoning", ?args, "Tool called");
+
+        let args: ShareReasoningArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "share_reasoning", error = %e, ?args, "Failed to parse arguments");
+            ToolError::execution_failed(format!("Invalid arguments: {}. Got: {}", e, args))
+        })?;
 
         let mut output = format!("💭 **Reasoning:**\n{}\n", args.reasoning);
         
@@ -211,7 +223,7 @@ pub enum AgentToolError {
 // ============================================================================
 
 /// Invoke a sub-agent with full executor support.
-/// 
+///
 /// This is the full implementation for when we have access to the database.
 pub async fn invoke_agent_with_executor(
     db: &Database,
@@ -219,21 +231,26 @@ pub async fn invoke_agent_with_executor(
     agent_name: &str,
     prompt: &str,
 ) -> Result<InvokeAgentResult, AgentToolError> {
-    let agent = manager.get(agent_name)
+    let agent = manager
+        .get(agent_name)
         .ok_or_else(|| AgentToolError::AgentNotFound(agent_name.to_string()))?;
 
-    let executor = AgentExecutor::new(db);
-    let registry = SpotToolRegistry::new();
+    let model_registry = ModelRegistry::load_from_db(db).unwrap_or_default();
+    let executor = AgentExecutor::new(db, &model_registry);
+    let tool_registry = SpotToolRegistry::new();
     let mcp_manager = McpManager::new();
-    
-    match executor.execute(
-        agent,
-        "gpt-4o", // TODO: Get from context
-        prompt,
-        None,
-        &registry,
-        &mcp_manager,
-    ).await {
+
+    match executor
+        .execute(
+            agent,
+            "gpt-4o", // TODO: Get from context
+            prompt,
+            None,
+            &tool_registry,
+            &mcp_manager,
+        )
+        .await
+    {
         Ok(result) => Ok(InvokeAgentResult {
             agent_name: agent_name.to_string(),
             response: result.output,

@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 use serdes_ai_tools::{
     Tool, ToolDefinition, ToolResult, ToolReturn, SchemaBuilder, RunContext,
@@ -66,8 +67,15 @@ impl Tool for ListFilesTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: ListFilesArgs = serde_json::from_value(args)
-            .map_err(|e| serdes_ai_tools::ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "list_files", ?args, "Tool called");
+
+        let args: ListFilesArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "list_files", error = %e, ?args, "Failed to parse arguments");
+            serdes_ai_tools::ToolError::execution_failed(format!(
+                "Invalid arguments: {}. Got: {}",
+                e, args
+            ))
+        })?;
 
         let directory = args.directory.as_deref().unwrap_or(".");
         let recursive = args.recursive.unwrap_or(true);
@@ -152,8 +160,15 @@ impl Tool for ReadFileTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: ReadFileArgs = serde_json::from_value(args)
-            .map_err(|e| serdes_ai_tools::ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "read_file", ?args, "Tool called");
+
+        let args: ReadFileArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "read_file", error = %e, ?args, "Failed to parse arguments");
+            serdes_ai_tools::ToolError::execution_failed(format!(
+                "Invalid arguments: {}. Got: {}",
+                e, args
+            ))
+        })?;
 
         match file_ops::read_file(
             &args.file_path,
@@ -240,8 +255,15 @@ impl Tool for EditFileTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: EditFileArgs = serde_json::from_value(args)
-            .map_err(|e| serdes_ai_tools::ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "edit_file", ?args, "Tool called");
+
+        let args: EditFileArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "edit_file", error = %e, ?args, "Failed to parse arguments");
+            serdes_ai_tools::ToolError::execution_failed(format!(
+                "Invalid arguments: {}. Got: {}",
+                e, args
+            ))
+        })?;
 
         match file_ops::write_file(&args.file_path, &args.content, args.create_directories) {
             Ok(()) => {
@@ -304,8 +326,15 @@ impl Tool for GrepTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: GrepArgs = serde_json::from_value(args)
-            .map_err(|e| serdes_ai_tools::ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "grep", ?args, "Tool called");
+
+        let args: GrepArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "grep", error = %e, ?args, "Failed to parse arguments");
+            serdes_ai_tools::ToolError::execution_failed(format!(
+                "Invalid arguments: {}. Got: {}",
+                e, args
+            ))
+        })?;
 
         let directory = args.directory.as_deref().unwrap_or(".");
 
@@ -386,8 +415,15 @@ impl Tool for RunShellCommandTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: RunShellCommandArgs = serde_json::from_value(args)
-            .map_err(|e| serdes_ai_tools::ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "run_shell_command", ?args, "Tool called");
+
+        let args: RunShellCommandArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "run_shell_command", error = %e, ?args, "Failed to parse arguments");
+            serdes_ai_tools::ToolError::execution_failed(format!(
+                "Invalid arguments: {}. Got: {}",
+                e, args
+            ))
+        })?;
 
         // Build the command runner with options
         let mut runner = shell::CommandRunner::new();
@@ -479,10 +515,17 @@ impl Tool for ShareReasoningTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: ShareReasoningArgs = serde_json::from_value(args)
-            .map_err(|e| serdes_ai_tools::ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "share_reasoning", ?args, "Tool called");
 
-        // Format the reasoning for display
+        let args: ShareReasoningArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "share_reasoning", error = %e, ?args, "Failed to parse arguments");
+            serdes_ai_tools::ToolError::execution_failed(format!(
+                "Invalid arguments: {}. Got: {}",
+                e, args
+            ))
+        })?;
+
+        // Just acknowledge - the actual display
         // Note: In a real implementation, this would send to a message bus
         // for the UI to display. For now, we just acknowledge.
         let mut output = format!("🧠 Reasoning shared:\n{}", args.reasoning);
@@ -528,8 +571,15 @@ impl Tool for DeleteFileTool {
     }
 
     async fn call(&self, _ctx: &RunContext, args: JsonValue) -> ToolResult {
-        let args: DeleteFileArgs = serde_json::from_value(args)
-            .map_err(|e| serdes_ai_tools::ToolError::execution_failed(e.to_string()))?;
+        debug!(tool = "delete_file", ?args, "Tool called");
+
+        let args: DeleteFileArgs = serde_json::from_value(args.clone()).map_err(|e| {
+            warn!(tool = "delete_file", error = %e, ?args, "Failed to parse arguments");
+            serdes_ai_tools::ToolError::execution_failed(format!(
+                "Invalid arguments: {}. Got: {}",
+                e, args
+            ))
+        })?;
 
         let path = std::path::Path::new(&args.file_path);
         

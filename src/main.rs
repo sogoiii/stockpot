@@ -46,8 +46,8 @@ struct Args {
     #[arg(long)]
     bridge: bool,
 
-    /// Working directory
-    #[arg(long)]
+    /// Working directory (like git -C)
+    #[arg(short = 'C', long, visible_alias = "directory")]
     cwd: Option<String>,
 
     /// Enable debug logging (equivalent to RUST_LOG=debug)

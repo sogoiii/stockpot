@@ -22,10 +22,11 @@
 //! {"type": "tool_response", "name": "...", "approved": true}
 //! ```
 
-use crate::agents::{AgentManager, AgentExecutor, StreamEvent};
+use crate::agents::{AgentExecutor, AgentManager, StreamEvent};
 use crate::config::Settings;
 use crate::db::Database;
 use crate::mcp::McpManager;
+use crate::models::ModelRegistry;
 use crate::tools::SpotToolRegistry;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
@@ -150,6 +151,7 @@ struct Bridge<'a> {
     agents: AgentManager,
     tool_registry: SpotToolRegistry,
     mcp_manager: McpManager,
+    model_registry: ModelRegistry,
     current_model: String,
 }
 
@@ -157,12 +159,13 @@ impl<'a> Bridge<'a> {
     fn new(db: &'a Database) -> Self {
         let settings = Settings::new(db);
         let current_model = settings.model();
-        
+
         Self {
             db,
             agents: AgentManager::new(),
             tool_registry: SpotToolRegistry::new(),
             mcp_manager: McpManager::new(),
+            model_registry: ModelRegistry::load_from_db(db).unwrap_or_default(),
             current_model,
         }
     }
@@ -186,8 +189,8 @@ impl<'a> Bridge<'a> {
             }
         };
 
-        let executor = AgentExecutor::new(self.db);
-        
+        let executor = AgentExecutor::new(self.db, &self.model_registry);
+
         match executor.execute_stream(
             agent,
             &self.current_model,

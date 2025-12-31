@@ -6,6 +6,8 @@
 //! - `ModelConfig` for per-model settings
 //! - `ModelRegistry` for loading and managing model configs
 
+use crate::db::Database;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -188,8 +190,8 @@ impl ModelRegistry {
         Self::default()
     }
 
-    /// Load models from all standard config locations.
-    /// Creates default models.json if it doesn't exist.
+    /// Load models from all standard config locations (legacy JSON files).
+    /// Prefer `load_from_db()` for new code.
     pub fn load() -> Result<Self, ModelConfigError> {
         let config_dir = Self::config_dir()?;
         let mut registry = Self::new();
@@ -207,12 +209,6 @@ impl ModelRegistry {
         // Load built-in models
         if models_path.exists() {
             registry.load_file(&models_path)?;
-        }
-
-        // Load user-added extra models
-        let extra_path = config_dir.join("extra_models.json");
-        if extra_path.exists() {
-            registry.load_file(&extra_path)?;
         }
 
         // Load ChatGPT OAuth models
@@ -233,6 +229,161 @@ impl ModelRegistry {
         }
 
         Ok(registry)
+    }
+
+    /// Load models from the database.
+    /// Also adds built-in defaults if they don't exist.
+    pub fn load_from_db(db: &Database) -> Result<Self, ModelConfigError> {
+        let mut registry = Self::new();
+
+        // First, ensure built-in models exist in DB
+        registry.ensure_builtin_models(db)?;
+
+        // Load all models from database
+        let mut stmt = db
+            .conn()
+            .prepare(
+                "SELECT name, model_type, model_id, context_length, supports_thinking,
+                        supports_vision, supports_tools, description, api_endpoint,
+                        api_key_env, headers, azure_deployment, azure_api_version
+                 FROM models ORDER BY name",
+            )
+            .map_err(|e| {
+                ModelConfigError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let model_type_str: String = row.get(1)?;
+                let headers_json: Option<String> = row.get(10)?;
+
+                Ok(ModelConfig {
+                    name: row.get(0)?,
+                    model_type: parse_model_type(&model_type_str),
+                    model_id: row.get(2)?,
+                    context_length: row.get::<_, i64>(3)? as usize,
+                    supports_thinking: row.get::<_, i64>(4)? != 0,
+                    supports_vision: row.get::<_, i64>(5)? != 0,
+                    supports_tools: row.get::<_, i64>(6)? != 0,
+                    description: row.get(7)?,
+                    custom_endpoint: build_custom_endpoint(
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, Option<String>>(9)?,
+                        headers_json,
+                    ),
+                    azure_deployment: row.get(11)?,
+                    azure_api_version: row.get(12)?,
+                    round_robin_models: Vec::new(),
+                })
+            })
+            .map_err(|e| {
+                ModelConfigError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+
+        for row in rows {
+            if let Ok(config) = row {
+                registry.models.insert(config.name.clone(), config);
+            }
+        }
+
+        // Also load legacy JSON files (for OAuth models, etc.)
+        registry.load_legacy_json_files()?;
+
+        Ok(registry)
+    }
+
+    /// Load legacy JSON files (OAuth models, etc.).
+    fn load_legacy_json_files(&mut self) -> Result<(), ModelConfigError> {
+        let config_dir = Self::config_dir()?;
+
+        // Load ChatGPT OAuth models
+        let chatgpt_path = config_dir.join("chatgpt_models.json");
+        if chatgpt_path.exists() {
+            self.load_file(&chatgpt_path)?;
+        }
+
+        // Load Claude Code OAuth models
+        let claude_path = config_dir.join("claude_models.json");
+        if claude_path.exists() {
+            self.load_file(&claude_path)?;
+        }
+
+        Ok(())
+    }
+
+    /// Ensure built-in default models exist in the database.
+    fn ensure_builtin_models(&self, db: &Database) -> Result<(), ModelConfigError> {
+        let defaults = crate::models::defaults::default_models();
+
+        for model in defaults {
+            // Insert if not exists (don't overwrite user customizations)
+            db.conn()
+                .execute(
+                    "INSERT OR IGNORE INTO models (name, model_type, model_id, context_length,
+                        supports_thinking, supports_vision, supports_tools, description, is_builtin)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                    params![
+                        &model.name,
+                        model.model_type.to_string(),
+                        &model.model_id,
+                        model.context_length as i64,
+                        model.supports_thinking as i64,
+                        model.supports_vision as i64,
+                        model.supports_tools as i64,
+                        &model.description,
+                    ],
+                )
+                .map_err(|e| {
+                    ModelConfigError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        e.to_string(),
+                    ))
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Add a custom model to the database.
+    pub fn add_model_to_db(db: &Database, config: &ModelConfig) -> Result<(), ModelConfigError> {
+        let headers_json = config
+            .custom_endpoint
+            .as_ref()
+            .map(|e| serde_json::to_string(&e.headers).unwrap_or_default());
+
+        db.conn()
+            .execute(
+                "INSERT OR REPLACE INTO models (name, model_type, model_id, context_length,
+                    supports_thinking, supports_vision, supports_tools, description,
+                    api_endpoint, api_key_env, headers, is_builtin, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, unixepoch())",
+                params![
+                    &config.name,
+                    config.model_type.to_string(),
+                    &config.model_id,
+                    config.context_length as i64,
+                    config.supports_thinking as i64,
+                    config.supports_vision as i64,
+                    config.supports_tools as i64,
+                    &config.description,
+                    config.custom_endpoint.as_ref().map(|e| &e.url),
+                    config.custom_endpoint.as_ref().and_then(|e| e.api_key.as_ref()),
+                    headers_json,
+                ],
+            )
+            .map_err(|e| {
+                ModelConfigError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })?;
+
+        Ok(())
+    }
+
+    /// Reload the registry from database.
+    pub fn reload_from_db(&mut self, db: &Database) -> Result<(), ModelConfigError> {
+        self.models.clear();
+        let fresh = Self::load_from_db(db)?;
+        self.models = fresh.models;
+        Ok(())
     }
 
     /// Load models from a specific JSON file.
@@ -289,37 +440,32 @@ impl ModelRegistry {
         self.models.len()
     }
 
-    /// Reload the registry from config files.
+    /// Reload the registry from config files (legacy).
     /// Call this after OAuth auth to pick up new models.
+    /// For database-backed registries, use `reload_from_db()` instead.
     pub fn reload(&mut self) -> Result<(), ModelConfigError> {
         self.models.clear();
-        
+
         let config_dir = Self::config_dir()?;
-        
+
         // Load built-in models
         let models_path = config_dir.join("models.json");
         if models_path.exists() {
             self.load_file(&models_path)?;
         }
-        
-        // Load user-added extra models
-        let extra_path = config_dir.join("extra_models.json");
-        if extra_path.exists() {
-            self.load_file(&extra_path)?;
-        }
-        
+
         // Load ChatGPT OAuth models
         let chatgpt_path = config_dir.join("chatgpt_models.json");
         if chatgpt_path.exists() {
             self.load_file(&chatgpt_path)?;
         }
-        
+
         // Load Claude Code OAuth models
         let claude_path = config_dir.join("claude_models.json");
         if claude_path.exists() {
             self.load_file(&claude_path)?;
         }
-        
+
         Ok(())
     }
 
@@ -420,67 +566,115 @@ impl ModelRegistry {
         });
     }
 
-    /// Save extra models to the config file.
-    pub fn save_extra_models(&self, models: &[ModelConfig]) -> Result<(), ModelConfigError> {
-        let config_dir = Self::config_dir()?;
-        std::fs::create_dir_all(&config_dir)?;
-        let path = config_dir.join("extra_models.json");
-        let content = serde_json::to_string_pretty(models)?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
-
     /// List only models that have valid provider configuration.
-    /// Checks for API keys in environment or OAuth tokens in config files.
-    pub fn list_available(&self) -> Vec<String> {
-        let mut available: Vec<String> = self.models
+    /// Checks for API keys in database or environment, or OAuth tokens.
+    pub fn list_available(&self, db: &Database) -> Vec<String> {
+        let mut available: Vec<String> = self
+            .models
             .iter()
-            .filter(|(name, config)| self.is_provider_available(name, config))
+            .filter(|(name, config)| self.is_provider_available(db, name, config))
             .map(|(name, _)| name.clone())
             .collect();
         available.sort();
         available
     }
 
-    /// Check if a model's provider is available (has API key or OAuth tokens).
-    fn is_provider_available(&self, _name: &str, config: &ModelConfig) -> bool {
+    /// Check if a model's provider is available (has API key in DB/env or OAuth tokens).
+    fn is_provider_available(&self, db: &Database, _name: &str, config: &ModelConfig) -> bool {
         match config.model_type {
-            ModelType::Openai => {
-                std::env::var("OPENAI_API_KEY").is_ok()
-            }
-            ModelType::Anthropic => {
-                std::env::var("ANTHROPIC_API_KEY").is_ok()
-            }
+            ModelType::Openai => has_api_key(db, "OPENAI_API_KEY"),
+            ModelType::Anthropic => has_api_key(db, "ANTHROPIC_API_KEY"),
             ModelType::Gemini => {
-                std::env::var("GEMINI_API_KEY").is_ok() 
-                    || std::env::var("GOOGLE_API_KEY").is_ok()
+                has_api_key(db, "GEMINI_API_KEY") || has_api_key(db, "GOOGLE_API_KEY")
             }
             ModelType::ClaudeCode => {
                 // Claude Code OAuth models are only in registry if auth succeeded
-                // They get loaded from claude_models.json which is created by auth
-                true  // If it's in the registry with this type, auth worked
+                true
             }
             ModelType::ChatgptOauth => {
                 // Same - if loaded, auth worked
                 true
             }
             ModelType::AzureOpenai => {
-                // Check for Azure-specific env vars
-                std::env::var("AZURE_OPENAI_API_KEY").is_ok() 
-                    || std::env::var("AZURE_OPENAI_ENDPOINT").is_ok()
+                has_api_key(db, "AZURE_OPENAI_API_KEY")
+                    || has_api_key(db, "AZURE_OPENAI_ENDPOINT")
             }
             ModelType::CustomOpenai | ModelType::CustomAnthropic => {
-                // Custom endpoints - check if API key is configured in the config itself
-                config.custom_endpoint.as_ref()
-                    .map(|e| e.api_key.is_some())
+                // Custom endpoints - check if API key is configured
+                // The api_key can be a literal or $ENV_VAR reference
+                config
+                    .custom_endpoint
+                    .as_ref()
+                    .map(|e| {
+                        e.api_key.as_ref().map_or(false, |key| {
+                            if key.starts_with('$') {
+                                // It's an env var reference, check DB then env
+                                let var_name = key
+                                    .trim_start_matches('$')
+                                    .trim_matches(|c| c == '{' || c == '}');
+                                has_api_key(db, var_name)
+                            } else {
+                                // It's a literal key
+                                !key.is_empty()
+                            }
+                        })
+                    })
                     .unwrap_or(false)
             }
-            ModelType::Openrouter => {
-                std::env::var("OPENROUTER_API_KEY").is_ok()
-            }
+            ModelType::Openrouter => has_api_key(db, "OPENROUTER_API_KEY"),
             ModelType::RoundRobin => true, // Round robin is always "available" if it exists
         }
     }
+}
+
+/// Parse a model type string from the database.
+fn parse_model_type(s: &str) -> ModelType {
+    match s {
+        "openai" => ModelType::Openai,
+        "anthropic" => ModelType::Anthropic,
+        "gemini" => ModelType::Gemini,
+        "custom_openai" => ModelType::CustomOpenai,
+        "custom_anthropic" => ModelType::CustomAnthropic,
+        "claude_code" => ModelType::ClaudeCode,
+        "chatgpt_oauth" => ModelType::ChatgptOauth,
+        "azure_openai" => ModelType::AzureOpenai,
+        "openrouter" => ModelType::Openrouter,
+        "round_robin" => ModelType::RoundRobin,
+        _ => ModelType::CustomOpenai,
+    }
+}
+
+/// Build a CustomEndpoint from database fields.
+fn build_custom_endpoint(
+    url: Option<String>,
+    api_key: Option<String>,
+    headers_json: Option<String>,
+) -> Option<CustomEndpoint> {
+    let url = url?;
+    Some(CustomEndpoint {
+        url,
+        api_key,
+        headers: headers_json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default(),
+        ca_certs_path: None,
+    })
+}
+
+/// Check if an API key is available (in database or environment).
+pub fn has_api_key(db: &Database, key_name: &str) -> bool {
+    db.has_api_key(key_name) || std::env::var(key_name).is_ok()
+}
+
+/// Resolve an API key, checking database first, then environment.
+/// Returns None if the key is not found in either location.
+pub fn resolve_api_key(db: &Database, key_name: &str) -> Option<String> {
+    // First check database
+    if let Ok(Some(key)) = db.get_api_key(key_name) {
+        return Some(key);
+    }
+    // Fall back to environment variable
+    std::env::var(key_name).ok()
 }
 
 /// Resolve environment variable references in a string.
