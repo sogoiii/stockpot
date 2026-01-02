@@ -601,12 +601,21 @@ impl<'a> AgentExecutor<'a> {
         let mut expected_tool_returns: usize = 0;
         let mut tool_return_index: usize = 0;
         let mut pending_tool_returns: Vec<ToolReturnPart> = Vec::new();
+        let mut pending_tool_calls: std::collections::VecDeque<(String, Option<String>)> =
+            std::collections::VecDeque::new();
 
         // Process all events through the bridge
         while let Some(event_result) = stream.recv().await {
             match event_result {
                 Ok(event) => {
-                    let tool_executed = matches!(&event, StreamEvent::ToolExecuted { .. });
+                    let tool_executed_info = match &event {
+                        StreamEvent::ToolExecuted {
+                            tool_name,
+                            success,
+                            error,
+                        } => Some((tool_name.clone(), *success, error.clone())),
+                        _ => None,
+                    };
 
                     match &event {
                         StreamEvent::RequestStart { .. } => {
@@ -641,7 +650,10 @@ impl<'a> AgentExecutor<'a> {
                                 completed_tool_calls.push(tc);
                             }
 
-                            let tool_calls_this_response = completed_tool_calls.len();
+                            pending_tool_calls = completed_tool_calls
+                                .iter()
+                                .map(|tc| (tc.tool_name.clone(), tc.tool_call_id.clone()))
+                                .collect();
 
                             let mut response_parts: Vec<ModelResponsePart> = Vec::new();
 
@@ -672,7 +684,7 @@ impl<'a> AgentExecutor<'a> {
 
                             // If tool calls were present, tool execution events follow and we can
                             // append tool returns once they complete.
-                            expected_tool_returns = tool_calls_this_response;
+                            expected_tool_returns = pending_tool_calls.len();
                             pending_tool_returns.clear();
                             current_response_text.clear();
                         }
@@ -683,25 +695,51 @@ impl<'a> AgentExecutor<'a> {
                     }
 
                     // Tool return payloads aren't present in stream events, so we stitch them
-                    // in from the recorder (in the same order ToolExecuted events arrive).
-                    if tool_executed && expected_tool_returns > 0 {
-                        let next_part = {
-                            let recorded = tool_return_recorder.lock().await;
-                            recorded.get(tool_return_index).cloned()
-                        };
+                    // in from a recorder wrapped around tool executors.
+                    //
+                    // Note: some tool failures (e.g., unknown tool) never call an executor; in
+                    // those cases we synthesize an error ToolReturnPart from the ToolExecuted event.
+                    if let Some((tool_name, success, error)) = tool_executed_info {
+                        if expected_tool_returns > 0 {
+                            let tool_call_id = pending_tool_calls.pop_front().and_then(|(_, id)| id);
 
-                        if let Some(part) = next_part {
-                            pending_tool_returns.push(part);
-                            tool_return_index += 1;
-                        }
+                            let mut part = {
+                                let next_part = {
+                                    let recorded = tool_return_recorder.lock().await;
+                                    recorded.get(tool_return_index).cloned()
+                                };
 
-                        if pending_tool_returns.len() == expected_tool_returns {
-                            let mut tool_req = ModelRequest::new();
-                            for part in pending_tool_returns.drain(..) {
-                                tool_req.parts.push(ModelRequestPart::ToolReturn(part));
+                                if let Some(part) = next_part {
+                                    tool_return_index += 1;
+                                    part
+                                } else {
+                                    let msg = error.unwrap_or_else(|| {
+                                        if success {
+                                            "Tool executed but no tool return was recorded".to_string()
+                                        } else {
+                                            "Tool failed".to_string()
+                                        }
+                                    });
+                                    ToolReturnPart::error(&tool_name, msg)
+                                }
+                            };
+
+                            if part.tool_call_id.is_none() {
+                                if let Some(id) = tool_call_id {
+                                    part = part.with_tool_call_id(id);
+                                }
                             }
-                            messages.push(tool_req);
-                            expected_tool_returns = 0;
+
+                            pending_tool_returns.push(part);
+
+                            if pending_tool_returns.len() == expected_tool_returns {
+                                let mut tool_req = ModelRequest::new();
+                                for part in pending_tool_returns.drain(..) {
+                                    tool_req.parts.push(ModelRequestPart::ToolReturn(part));
+                                }
+                                messages.push(tool_req);
+                                expected_tool_returns = 0;
+                            }
                         }
                     }
 
@@ -779,6 +817,7 @@ impl<'a> AgentExecutor<'a> {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_stream_internal(
         &self,
         spot_agent: &dyn SpotAgent,

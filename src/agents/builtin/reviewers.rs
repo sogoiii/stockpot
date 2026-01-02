@@ -1,6 +1,6 @@
 //! Code reviewer agents.
 
-use crate::agents::{AgentCapabilities, SpotAgent};
+use crate::agents::{AgentCapabilities, AgentVisibility, SpotAgent};
 
 macro_rules! define_reviewer {
     ($struct_name:ident, $name:expr, $display:expr, $desc:expr, $prompt_file:expr) => {
@@ -29,6 +29,10 @@ macro_rules! define_reviewer {
 
             fn capabilities(&self) -> AgentCapabilities {
                 AgentCapabilities::read_only()
+            }
+
+            fn visibility(&self) -> AgentVisibility {
+                AgentVisibility::Sub
             }
         }
     };

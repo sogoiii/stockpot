@@ -47,8 +47,8 @@ pub mod gui;
 
 // Re-export commonly used types
 pub use agents::{
-    AgentManager, SpotAgent, BoxedAgent, AgentExecutor, ExecutorResult, 
-    ExecutorError, StreamEvent, AgentCapabilities,
+    AgentManager, SpotAgent, BoxedAgent, AgentExecutor, ExecutorResult,
+    ExecutorError, StreamEvent, AgentCapabilities, AgentVisibility, UserMode,
     JsonAgent, JsonAgentDef, load_json_agents,
 };
 pub use auth::{ChatGptAuth, ClaudeCodeAuth, OAuthProvider};

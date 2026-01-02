@@ -1,6 +1,6 @@
 //! Explore Agent - Fast codebase navigation and file search specialist.
 
-use crate::agents::{AgentCapabilities, SpotAgent};
+use crate::agents::{AgentCapabilities, AgentVisibility, SpotAgent};
 
 /// Explore Agent - Fast, read-only codebase exploration and search 🔍
 pub struct ExploreAgent;
@@ -24,6 +24,10 @@ impl SpotAgent for ExploreAgent {
 
     fn available_tools(&self) -> Vec<&str> {
         vec!["list_files", "read_file", "grep", "share_your_reasoning"]
+    }
+
+    fn visibility(&self) -> AgentVisibility {
+        AgentVisibility::Sub
     }
 
     fn capabilities(&self) -> AgentCapabilities {

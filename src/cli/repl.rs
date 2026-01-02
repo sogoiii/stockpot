@@ -1,6 +1,6 @@
 //! Interactive REPL implementation.
 
-use crate::agents::{AgentExecutor, AgentManager, StreamEvent};
+use crate::agents::{AgentExecutor, AgentManager, StreamEvent, UserMode};
 use crate::cli::completion_reedline::{create_reedline, SpotCompleter, SpotPrompt};
 use crate::cli::model_picker::{edit_model_settings, pick_agent, pick_model, show_model_settings};
 use crate::config::Settings;
@@ -78,7 +78,14 @@ impl<'a> Repl<'a> {
     pub async fn run(&mut self) -> anyhow::Result<()> {
         // Set up completer
         let mut completer = SpotCompleter::new();
-        completer.set_agents(self.agents.list().iter().map(|a| a.name.clone()).collect());
+        let user_mode = Settings::new(self.db).user_mode();
+        completer.set_agents(
+            self.agents
+                .list_filtered(user_mode)
+                .iter()
+                .map(|a| a.name.clone())
+                .collect(),
+        );
         completer.set_sessions(self.session_manager.list().unwrap_or_default().into_iter().map(|s| s.name).collect());
         completer.set_mcp_servers(self.mcp_manager.config().servers.keys().cloned().collect());
         completer.set_models(self.model_registry.list_available(self.db));
@@ -101,7 +108,7 @@ impl<'a> Repl<'a> {
             };
             
             let prompt = SpotPrompt::with_pinned(
-                self.agents.current().map(|a| a.display_name()).unwrap_or("stockpot 🍲"),
+                self.agents.current().map(|a| a.display_name()).unwrap_or("Coding Agent"),
                 &effective_model,
                 is_pinned,
             );
@@ -172,10 +179,22 @@ impl<'a> Repl<'a> {
         }
     }
     fn completion_context(&self) -> super::completion_reedline::CompletionContext {
+        let user_mode = Settings::new(self.db).user_mode();
         super::completion_reedline::CompletionContext {
             models: self.model_registry.list().iter().map(|s| s.to_string()).collect(),
-            agents: self.agents.list().iter().map(|a| a.name.clone()).collect(),
-            sessions: self.session_manager.list().unwrap_or_default().into_iter().map(|s| s.name).collect(),
+            agents: self
+                .agents
+                .list_filtered(user_mode)
+                .iter()
+                .map(|a| a.name.clone())
+                .collect(),
+            sessions: self
+                .session_manager
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.name)
+                .collect(),
             mcp_servers: self.mcp_manager.config().servers.keys().cloned().collect(),
         }
     }
@@ -227,7 +246,10 @@ impl<'a> Repl<'a> {
             "agent" | "a" => {
                 if args.is_empty() {
                     // Interactive picker
-                    let agents: Vec<(String, String)> = self.agents.list()
+                    let user_mode = Settings::new(self.db).user_mode();
+                    let agents: Vec<(String, String)> = self
+                        .agents
+                        .list_filtered(user_mode)
                         .into_iter()
                         .map(|info| (info.name.clone(), info.display_name.clone()))
                         .collect();
@@ -249,11 +271,10 @@ impl<'a> Repl<'a> {
                 }
             }
             "agents" => {
-                let agents: Vec<_> = self.agents.list()
-                    .into_iter()
-                    .map(|i| (i.name.clone(), i.display_name.clone(), i.description.clone()))
-                    .collect();
-                core::cmd_agents(&agents, &self.agents.current_name());
+                let settings = Settings::new(self.db);
+                let user_mode = settings.user_mode();
+                let agents = self.agents.list_filtered(user_mode);
+                core::cmd_agents(&agents, &self.agents.current_name(), user_mode == UserMode::Developer);
             }
             "mcp" => mcp::handle(&self.mcp_manager, args).await,
             "set" => self.cmd_set(args)?,
@@ -382,8 +403,27 @@ impl<'a> Repl<'a> {
             }
             println!();
         } else if let Some((key, value)) = args.split_once('=') {
-            settings.set(key.trim(), value.trim())?;
-            println!("✅ Set {} = {}", key.trim(), value.trim());
+            let key = key.trim();
+            let value = value.trim();
+
+            match key {
+                "user_mode" => match value.parse::<UserMode>() {
+                    Ok(mode) => {
+                        settings.set_user_mode(mode)?;
+                        println!("✅ Set user_mode = {}", mode);
+                    }
+                    Err(_) => {
+                        println!("❌ Invalid user_mode: {}", value);
+                        println!("   Valid: normal | expert | developer");
+                    }
+                },
+                _ => {
+                    settings.set(key, value)?;
+                    println!("✅ Set {} = {}", key, value);
+                }
+            }
+        } else if args.trim() == "user_mode" {
+            println!("user_mode = {}", settings.user_mode());
         } else if let Some(value) = settings.get(args)? {
             println!("{} = {}", args, value);
         } else {

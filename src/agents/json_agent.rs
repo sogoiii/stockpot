@@ -11,12 +11,15 @@
 //!   "description": "Does something useful",
 //!   "system_prompt": "You are...",
 //!   "tools": ["read_file", "edit_file", "grep"],
-//!   "model": "gpt-4o"  // optional model override
+//!   "model": "gpt-4o",
+//!   "visibility": "main"
 //! }
 //! ```
+//!
+//! // visibility: "main" | "sub" | "hidden" (default: "main")
 
 use super::base::SpotAgent;
-use super::AgentCapabilities;
+use super::{AgentCapabilities, AgentVisibility};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,6 +60,9 @@ pub struct JsonAgentDef {
     /// Optional capabilities override.
     #[serde(default)]
     pub capabilities: Option<JsonCapabilities>,
+    /// Visibility level for UI filtering (main, sub, hidden).
+    #[serde(default)]
+    pub visibility: Option<AgentVisibility>,
 }
 
 /// Capabilities defined in JSON.
@@ -141,6 +147,10 @@ impl SpotAgent for JsonAgent {
         self.capabilities.clone()
     }
 
+    fn visibility(&self) -> AgentVisibility {
+        self.def.visibility.unwrap_or_default()
+    }
+
     fn model_override(&self) -> Option<&str> {
         self.def.model.as_deref()
     }
@@ -153,36 +163,57 @@ pub fn agents_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".stockpot/agents"))
 }
 
+fn load_json_agents_from_dir(dir: &Path) -> Vec<JsonAgent> {
+    let mut agents = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+
+            // Convention: files prefixed with '_' or '.' are templates/dev-only and not loaded.
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            if file_name.starts_with('_') || file_name.starts_with('.') {
+                continue;
+            }
+
+            let is_json = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("json"))
+                .unwrap_or(false);
+            if !is_json {
+                continue;
+            }
+
+            match JsonAgent::from_file(&path) {
+                Ok(agent) => {
+                    tracing::info!("Loaded JSON agent: {}", agent.name());
+                    agents.push(agent);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load agent from {:?}: {}", path, e);
+                }
+            }
+        }
+    }
+
+    agents
+}
+
 /// Load all JSON agents from the agents directory.
 pub fn load_json_agents() -> Vec<JsonAgent> {
     let dir = agents_dir();
-    
+
     if !dir.exists() {
         // Create the directory
         let _ = fs::create_dir_all(&dir);
         return Vec::new();
     }
 
-    let mut agents = Vec::new();
-    
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|e| e == "json").unwrap_or(false) {
-                match JsonAgent::from_file(&path) {
-                    Ok(agent) => {
-                        tracing::info!("Loaded JSON agent: {}", agent.name());
-                        agents.push(agent);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to load agent from {:?}: {}", path, e);
-                    }
-                }
-            }
-        }
-    }
-    
-    agents
+    load_json_agents_from_dir(&dir)
 }
 
 #[cfg(test)]
@@ -216,6 +247,7 @@ mod tests {
             tools: vec!["read_file".to_string()],
             model: Some("gpt-4o".to_string()),
             capabilities: None,
+            visibility: None,
         };
 
         let agent = JsonAgent::new(def);
@@ -228,18 +260,48 @@ mod tests {
     fn test_load_from_file() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test-agent.json");
-        
+
         let json = r#"{
             "name": "file-agent",
             "system_prompt": "You help with files.",
             "tools": ["read_file", "write_file"]
         }"#;
-        
+
         fs::write(&path, json).unwrap();
-        
+
         let agent = JsonAgent::from_file(&path).unwrap();
         assert_eq!(agent.name(), "file-agent");
         assert_eq!(agent.available_tools(), vec!["read_file", "write_file"]);
+    }
+
+    #[test]
+    fn test_load_json_agents_skips_underscore_prefixed_files() {
+        let dir = tempdir().unwrap();
+
+        fs::write(
+            dir.path().join("_example.json"),
+            r#"{
+              "name": "example-agent",
+              "system_prompt": "You are an example.",
+              "tools": ["read_file"]
+            }"#,
+        )
+        .unwrap();
+
+        fs::write(
+            dir.path().join("real.json"),
+            r#"{
+              "name": "real-agent",
+              "system_prompt": "You are real.",
+              "tools": ["read_file"]
+            }"#,
+        )
+        .unwrap();
+
+        let agents = load_json_agents_from_dir(dir.path());
+        let names: Vec<_> = agents.iter().map(|a| a.name()).collect();
+
+        assert_eq!(names, vec!["real-agent"]);
     }
 
     #[test]
@@ -258,6 +320,7 @@ mod tests {
                 sub_agents: Some(false),
                 mcp: Some(false),
             }),
+            visibility: None,
         };
 
         let agent = JsonAgent::new(def);

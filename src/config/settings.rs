@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::agents::UserMode;
 use crate::db::Database;
 use thiserror::Error;
 
@@ -102,6 +103,16 @@ impl<'a> Settings<'a> {
     /// Get the owner name.
     pub fn owner_name(&self) -> String {
         self.get_or("owner_name", "Master")
+    }
+
+    /// Get the current user mode.
+    pub fn user_mode(&self) -> UserMode {
+        self.get_or("user_mode", "normal").parse().unwrap_or_default()
+    }
+
+    /// Set the user mode.
+    pub fn set_user_mode(&self, mode: UserMode) -> Result<(), SettingsError> {
+        self.set("user_mode", &mode.to_string())
     }
 
     // Agent model pin management

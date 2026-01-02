@@ -1,13 +1,13 @@
 //! Base agent trait.
 
-use super::AgentCapabilities;
+use super::{AgentCapabilities, AgentVisibility};
 
 /// Trait for all Stockpot agents.
 pub trait SpotAgent: Send + Sync {
     /// Unique identifier for the agent (e.g., "stockpot", "python-reviewer").
     fn name(&self) -> &str;
 
-    /// Human-readable display name (e.g., "stockpot 🍲").
+    /// Human-readable display name (e.g., "Coding Agent").
     fn display_name(&self) -> &str;
 
     /// Brief description of what this agent does.
@@ -22,6 +22,11 @@ pub trait SpotAgent: Send + Sync {
     /// Get the agent's capabilities.
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities::default()
+    }
+
+    /// Get the visibility level for this agent.
+    fn visibility(&self) -> AgentVisibility {
+        AgentVisibility::Main
     }
 
     /// Optional model override (if agent requires a specific model).

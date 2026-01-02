@@ -44,6 +44,10 @@ impl Render for ZedMarkdownText {
         style.syntax = cx.theme().syntax().clone();
         style.selection_background_color = cx.theme().colors().element_selection_background;
 
+        style.container_style = gpui::StyleRefinement::default().flex().flex_col();
+
+        style.rule_color = self.theme.text_muted.into();
+
         div()
             .child(markdown::MarkdownElement::new(self.markdown.clone(), style))
     }

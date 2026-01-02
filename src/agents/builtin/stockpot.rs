@@ -11,7 +11,7 @@ impl SpotAgent for StockpotAgent {
     }
 
     fn display_name(&self) -> &str {
-        "stockpot 🍲"
+        "Coding Agent"
     }
 
     fn description(&self) -> &str {

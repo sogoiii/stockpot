@@ -192,6 +192,42 @@ pup --model anthropic:claude-3-5-sonnet
 └── mcp.json           # MCP server configuration
 ```
 
+### User Modes & Agent Visibility
+
+Stockpot organizes agents into three visibility levels to reduce clutter for different user experience levels:
+
+| Visibility | Description |
+|------------|-------------|
+| **Main** | Core agents always visible (stockpot, planning) |
+| **Sub** | Specialized agents for power users (reviewers, explore) |
+| **Hidden** | Development/example agents |
+
+#### Setting User Mode
+
+Control which agents you see based on your experience level:
+
+- **Normal** (default): Shows only Main agents - perfect for everyday use
+- **Expert**: Shows Main + Sub agents - for power users who want specialized tools
+- **Developer**: Shows all agents including Hidden - for development and debugging
+
+```bash
+# Set user mode via CLI
+/set user_mode=expert
+
+# Or use the GUI settings panel
+```
+
+#### Agent Visibility in JSON
+
+Custom JSON agents can specify their visibility:
+
+```json
+{
+  "name": "my-agent",
+  "visibility": "sub"
+}
+```
+
 ### Custom Agents (`~/.stockpot/agents/*.json`)
 
 ```json

@@ -3,6 +3,7 @@
 //! This module contains implementations for basic REPL commands
 //! that don't require complex state management.
 
+use crate::agents::{AgentInfo, AgentVisibility};
 use crate::config::Settings;
 use crate::db::Database;
 use crate::models::{ModelConfig, ModelRegistry, ModelSettings};
@@ -95,13 +96,27 @@ pub fn cmd_version() {
 }
 
 /// Handle the /agents command - list available agents.
-pub fn cmd_agents(agents: &[(String, String, String)], current_name: &str) {
+pub fn cmd_agents(agents: &[AgentInfo], current_name: &str, show_visibility: bool) {
     println!("\n📋 \x1b[1mAvailable Agents:\x1b[0m\n");
-    for (name, display_name, description) in agents {
-        let marker = if name == current_name { "→ " } else { "  " };
-        println!("{}\x1b[1;36m{}\x1b[0m", marker, display_name);
-        println!("    Name: {}", name);
-        println!("    {}\n", description);
+    for agent in agents {
+        let marker = if agent.name == current_name { "→ " } else { "  " };
+        let visibility_badge = if show_visibility {
+            let label = match agent.visibility {
+                AgentVisibility::Main => "Main",
+                AgentVisibility::Sub => "Sub",
+                AgentVisibility::Hidden => "Hidden",
+            };
+            format!(" \x1b[2m[{}]\x1b[0m", label)
+        } else {
+            String::new()
+        };
+
+        println!(
+            "{}\x1b[1;36m{}\x1b[0m{}",
+            marker, agent.display_name, visibility_badge
+        );
+        println!("    Name: {}", agent.name);
+        println!("    {}\n", agent.description);
     }
 }
 

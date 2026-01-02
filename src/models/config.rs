@@ -373,6 +373,17 @@ impl ModelRegistry {
         Ok(())
     }
 
+    /// Remove a custom model from the database.
+    pub fn remove_model_from_db(db: &Database, name: &str) -> Result<(), ModelConfigError> {
+        db.conn()
+            .execute(
+                "DELETE FROM models WHERE name = ? AND is_builtin = 0",
+                params![name],
+            )
+            .map_err(|e| ModelConfigError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+
     /// Reload the registry from database.
     pub fn reload_from_db(&mut self, db: &Database) -> Result<(), ModelConfigError> {
         self.models.clear();
