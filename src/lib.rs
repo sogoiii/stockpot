@@ -41,6 +41,7 @@ pub mod models;
 pub mod session;
 pub mod tokens;
 pub mod tools;
+pub mod version_check;
 
 #[cfg(feature = "gui")]
 pub mod gui;
@@ -63,3 +64,4 @@ pub use tools::{
     apply_unified_diff, grep, is_unified_diff, list_files, read_file, write_file, ArcTool,
     InvokeAgentTool, ListAgentsTool, SpotToolRegistry, UnifiedDiff,
 };
+pub use version_check::{check_for_update, CURRENT_VERSION};

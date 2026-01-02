@@ -1,23 +1,17 @@
 [package]
 name = "stockpot"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
-default-run = "spot"
-description = "AI-powered coding assistant CLI"
+description = "AI-powered coding assistant with GUI, CLI, and TUI modes"
 license = "MIT"
 authors = ["Stockpot Contributors"]
-repository = "https://github.com/your-org/stockpot"
-keywords = ["ai", "cli", "coding", "assistant", "llm"]
-categories = ["command-line-utilities", "development-tools"]
+repository = "https://github.com/fed-stew/stockpot"
+keywords = ["ai", "gui", "cli", "coding", "assistant", "llm"]
+categories = ["command-line-utilities", "development-tools", "gui"]
 
 [[bin]]
 name = "spot"
 path = "src/main.rs"
-
-[[bin]]
-name = "stockpot-gui"
-path = "src/bin/stockpot-gui.rs"
-required-features = ["gui"]
 
 [dependencies]
 # SerdesAI - AI agent framework
@@ -67,6 +61,7 @@ uuid = { version = "1.0", features = ["v4"] }
 which = "6.0"
 regex = "1.10"
 glob = "0.3"
+semver = "1.0"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
@@ -101,7 +96,7 @@ assert_cmd = "2.0"
 predicates = "3.1"
 
 [features]
-default = []
+default = ["gui"]
 gui = ["dep:gpui", "dep:gpui-component", "dep:gpui-component-assets", "dep:rfd", "dep:unicode-segmentation"]
 
 [profile.release]
