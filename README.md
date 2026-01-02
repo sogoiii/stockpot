@@ -89,7 +89,6 @@ spot --version
 
 ### Prerequisites
 - Rust 1.75 or later (only needed for building from source)
-- ripgrep (`rg`) for fast searching
 
 ## 🚀 Quick Start
 

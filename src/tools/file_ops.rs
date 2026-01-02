@@ -1,10 +1,13 @@
 //! File operation tools.
 
-use super::common::should_ignore;
+use super::common::{is_text_file, should_ignore};
+use grep_regex::RegexMatcher;
+use grep_searcher::{Searcher, Sink, SinkMatch};
+use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::io;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -203,47 +206,179 @@ pub struct GrepResult {
     pub total_matches: usize,
 }
 
-/// Search for a pattern in files using ripgrep.
+/// Safety caps to prevent huge context blowups.
+const GREP_HARD_MAX_MATCHES: usize = 200;
+const GREP_DEFAULT_MAX_MATCHES: usize = 100;
+const GREP_MAX_MATCHES_PER_FILE: usize = 10;
+const GREP_MAX_LINE_LENGTH: usize = 512;
+const GREP_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+const GREP_MAX_DEPTH: usize = 10;
+
+fn truncate_line(s: &str, max_chars: usize) -> (String, usize) {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        (s.to_string(), 0)
+    } else {
+        let truncated: String = s.chars().take(max_chars).collect();
+        (truncated, char_count - max_chars)
+    }
+}
+
+struct MatchCollector {
+    matches: Vec<GrepMatch>,
+    file_path: String,
+    max_matches: usize,
+    max_per_file: usize,
+    file_match_count: usize,
+}
+
+impl Sink for MatchCollector {
+    type Error = io::Error;
+
+    fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        if self.matches.len() >= self.max_matches {
+            return Ok(false);
+        }
+
+        if self.file_match_count >= self.max_per_file {
+            return Ok(false);
+        }
+
+        let raw = String::from_utf8_lossy(mat.bytes());
+        let raw = raw.trim_end_matches(&['\r', '\n'][..]);
+        let (mut line_content, truncated_chars) = truncate_line(raw, GREP_MAX_LINE_LENGTH);
+
+        if truncated_chars > 0 {
+            line_content.push_str(&format!(" [...{} more chars]", truncated_chars));
+        }
+
+        let line_number = mat.line_number().unwrap_or(0);
+        let line_number = usize::try_from(line_number).unwrap_or(0);
+
+        self.matches.push(GrepMatch {
+            path: self.file_path.clone(),
+            line_number,
+            content: line_content,
+        });
+
+        self.file_match_count += 1;
+        Ok(true)
+    }
+}
+
+/// Search for a pattern in files.
 pub fn grep(
     pattern: &str,
     directory: &str,
     max_results: Option<usize>,
 ) -> Result<GrepResult, FileError> {
-    let max = max_results.unwrap_or(100);
-    
-    // Try ripgrep first, fall back to grep
-    let output = Command::new("rg")
-        .args([
-            "--line-number",
-            "--no-heading",
-            "--max-count", &max.to_string(),
-            pattern,
-            directory,
-        ])
-        .output();
+    let requested = max_results.unwrap_or(GREP_DEFAULT_MAX_MATCHES);
+    let max_matches = requested.min(GREP_HARD_MAX_MATCHES);
 
-    let output = match output {
-        Ok(o) => o,
-        Err(_) => {
-            // Fall back to grep
-            Command::new("grep")
-                .args(["-rn", "--max-count", &max.to_string(), pattern, directory])
-                .output()?
-        }
+    if pattern.is_empty() {
+        return Err(FileError::GrepError("pattern must not be empty".to_string()));
+    }
+
+    let path = PathBuf::from(directory);
+    let abs_path = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(&path)
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut matches = Vec::new();
+    if !abs_path.exists() {
+        return Err(FileError::NotFound(directory.to_string()));
+    }
 
-    for line in stdout.lines() {
-        // Format: path:line_number:content
-        let parts: Vec<&str> = line.splitn(3, ':').collect();
-        if parts.len() >= 3 {
-            matches.push(GrepMatch {
-                path: parts[0].to_string(),
-                line_number: parts[1].parse().unwrap_or(0),
-                content: parts[2].to_string(),
-            });
+    if !abs_path.is_dir() {
+        return Err(FileError::GrepError(format!("Not a directory: {}", directory)));
+    }
+
+    // Support a tiny subset of common ripgrep-ish flags embedded in the pattern.
+    let (pattern, case_insensitive) =
+        if let Some(rest) = pattern.strip_prefix("--ignore-case ") {
+            (rest, true)
+        } else if let Some(rest) = pattern.strip_prefix("-i ") {
+            (rest, true)
+        } else {
+            (pattern, false)
+        };
+
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return Err(FileError::GrepError("pattern must not be empty".to_string()));
+    }
+
+    let regex_pattern = if case_insensitive {
+        format!("(?i){}", pattern)
+    } else {
+        pattern.to_string()
+    };
+
+    // Try regex, then fall back to literal (same behavior as ticca-desktop).
+    let matcher = RegexMatcher::new_line_matcher(&regex_pattern)
+        .or_else(|_| {
+            let escaped = regex::escape(pattern);
+            let escaped_pattern = if case_insensitive {
+                format!("(?i){}", escaped)
+            } else {
+                escaped
+            };
+            RegexMatcher::new_line_matcher(&escaped_pattern)
+        })
+        .map_err(|e| FileError::GrepError(format!("Invalid search pattern: {}", e)))?;
+
+    let walker = WalkBuilder::new(&abs_path)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(false)
+        .git_exclude(false)
+        .max_depth(Some(GREP_MAX_DEPTH))
+        .max_filesize(Some(GREP_MAX_FILE_SIZE_BYTES))
+        .filter_entry(|e| !should_ignore(&e.path().to_string_lossy()))
+        .build();
+
+    let mut searcher = Searcher::new();
+    let mut matches: Vec<GrepMatch> = Vec::new();
+
+    for entry in walker.flatten() {
+        if matches.len() >= max_matches {
+            break;
+        }
+
+        let entry_path = entry.path();
+
+        let is_file = entry
+            .file_type()
+            .map(|ft| ft.is_file())
+            .unwrap_or(false);
+        if !is_file {
+            continue;
+        }
+
+        let entry_path_str = entry_path.to_string_lossy().to_string();
+        if should_ignore(&entry_path_str) || !is_text_file(&entry_path_str) {
+            continue;
+        }
+
+        let relative_path = entry_path
+            .strip_prefix(&abs_path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| entry_path_str.clone());
+
+        let mut collector = MatchCollector {
+            matches: Vec::new(),
+            file_path: relative_path,
+            max_matches: max_matches - matches.len(),
+            max_per_file: GREP_MAX_MATCHES_PER_FILE,
+            file_match_count: 0,
+        };
+
+        if searcher
+            .search_path(&matcher, entry_path, &mut collector)
+            .is_ok()
+        {
+            matches.extend(collector.matches);
         }
     }
 
@@ -302,4 +437,63 @@ pub fn apply_diff(path: &str, diff_text: &str) -> Result<(), FileError> {
     write_file(path, &patched, true)?;
     
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grep_finds_matches_and_line_numbers() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        let file_path = dir.path().join("a.txt");
+        fs::write(&file_path, "foo\nbar\nfoo\n").expect("write failed");
+
+        let result = grep("foo", dir.path().to_str().unwrap(), None).expect("grep failed");
+        assert_eq!(result.total_matches, 2);
+
+        assert!(result.matches[0].path.ends_with("a.txt"));
+        assert_eq!(result.matches[0].line_number, 1);
+        assert_eq!(result.matches[0].content, "foo");
+
+        assert!(result.matches[1].path.ends_with("a.txt"));
+        assert_eq!(result.matches[1].line_number, 3);
+        assert_eq!(result.matches[1].content, "foo");
+    }
+
+    #[test]
+    fn grep_respects_max_results() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        let file_path = dir.path().join("a.txt");
+        fs::write(&file_path, "foo\nfoo\nfoo\n").expect("write failed");
+
+        let result = grep("foo", dir.path().to_str().unwrap(), Some(1)).expect("grep failed");
+        assert_eq!(result.total_matches, 1);
+    }
+
+    #[test]
+    fn grep_ignores_common_artifacts() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        let good = dir.path().join("a.txt");
+        fs::write(&good, "foo\n").expect("write failed");
+
+        let ignored_dir = dir.path().join("target");
+        fs::create_dir_all(&ignored_dir).expect("mkdir failed");
+        fs::write(ignored_dir.join("b.txt"), "foo\n").expect("write failed");
+
+        let result = grep("foo", dir.path().to_str().unwrap(), None).expect("grep failed");
+        assert_eq!(result.total_matches, 1);
+        assert!(result.matches[0].path.ends_with("a.txt"));
+    }
+
+    #[test]
+    fn grep_falls_back_to_literal_on_invalid_regex() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        let file_path = dir.path().join("a.txt");
+        fs::write(&file_path, "(paren)\n").expect("write failed");
+
+        let result = grep("(", dir.path().to_str().unwrap(), None).expect("grep failed");
+        assert_eq!(result.total_matches, 1);
+        assert!(result.matches[0].content.contains("(paren)"));
+    }
 }
