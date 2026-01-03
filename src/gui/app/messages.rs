@@ -101,10 +101,7 @@ impl ChatApp {
                                             .when(is_user, |d| d.max_w(px(600.)))
                                             .when(!is_user, |d| d.w_full().max_w_full())
                                             // Use gpui-component's markdown renderer
-                                            .child(
-                                                markdown(&msg.content)
-                                                    .selectable(true)
-                                            )
+                                            .child(markdown(&msg.content).selectable(true))
                                             .when(is_streaming, |d: gpui::Div| {
                                                 d.child(
                                                     div()

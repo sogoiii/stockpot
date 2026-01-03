@@ -17,11 +17,11 @@ use tracing::{debug, error, info, warn};
 
 use serdes_ai_agent::{agent, RunOptions};
 use serdes_ai_core::messages::ToolCallArgs;
+use serdes_ai_core::messages::{ImageMediaType, UserContent, UserContentPart};
 use serdes_ai_core::{
     ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings, TextPart,
     ToolCallPart, ToolReturnPart,
 };
-use serdes_ai_core::messages::{ImageMediaType, UserContent, UserContentPart};
 use serdes_ai_models::{
     infer_model, openai::OpenAIChatModel, Model, ModelError, ModelProfile, ModelRequestParameters,
     StreamedResponse,

@@ -49,8 +49,9 @@ pub struct ModelInfo {
 pub async fn fetch_providers() -> Result<HashMap<String, ProviderInfo>> {
     println!("\x1b[2mLoading providers from bundled models.conf...\x1b[0m");
 
-    let providers: HashMap<String, ProviderInfo> = serde_json::from_str(BUNDLED_MODELS_CATALOG_JSON)
-        .map_err(|e| anyhow!("Failed to parse bundled models.conf: {}", e))?;
+    let providers: HashMap<String, ProviderInfo> =
+        serde_json::from_str(BUNDLED_MODELS_CATALOG_JSON)
+            .map_err(|e| anyhow!("Failed to parse bundled models.conf: {}", e))?;
 
     Ok(providers)
 }

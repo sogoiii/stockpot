@@ -103,10 +103,9 @@ impl ChatApp {
                     .overflow_x_hidden()
                     .pb(px(8.0))
                     .children(
-                        attachments
-                            .iter()
-                            .enumerate()
-                            .map(|(index, att)| self.render_single_attachment(att, index, theme, cx)),
+                        attachments.iter().enumerate().map(|(index, att)| {
+                            self.render_single_attachment(att, index, theme, cx)
+                        }),
                     ),
             )
             .child(
@@ -131,18 +130,15 @@ impl ChatApp {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         match attachment {
-            PendingAttachment::Image(img) => {
-                self.render_image_attachment(img, index, theme, cx)
-                    .into_any_element()
-            }
-            PendingAttachment::File(file) => {
-                self.render_file_attachment(file, index, theme, cx)
-                    .into_any_element()
-            }
-            PendingAttachment::Pdf(pdf) => {
-                self.render_pdf_attachment(pdf, index, theme, cx)
-                    .into_any_element()
-            }
+            PendingAttachment::Image(img) => self
+                .render_image_attachment(img, index, theme, cx)
+                .into_any_element(),
+            PendingAttachment::File(file) => self
+                .render_file_attachment(file, index, theme, cx)
+                .into_any_element(),
+            PendingAttachment::Pdf(pdf) => self
+                .render_pdf_attachment(pdf, index, theme, cx)
+                .into_any_element(),
         }
     }
 
@@ -205,7 +201,12 @@ impl ChatApp {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .child(div().text_size(px(14.0)).text_color(rgb(0xffffff)).child("×"))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(rgb(0xffffff))
+                            .child("×"),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -269,7 +270,12 @@ impl ChatApp {
                     .items_center()
                     .justify_center()
                     .cursor_pointer()
-                    .child(div().text_size(px(14.0)).text_color(rgb(0xffffff)).child("×"))
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(rgb(0xffffff))
+                            .child("×"),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {

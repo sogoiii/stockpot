@@ -115,10 +115,7 @@ impl Tool for ListFilesTool {
 
                 output.push_str(&format!(
                     "\n\nSummary: {} files, {} directories, {} bytes total{}",
-                    result.total_files,
-                    result.total_dirs,
-                    result.total_size,
-                    truncation_note
+                    result.total_files, result.total_dirs, result.total_size, truncation_note
                 ));
 
                 Ok(ToolReturn::text(output))

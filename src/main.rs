@@ -204,7 +204,7 @@ fn run_gui(args: Args) -> anyhow::Result<()> {
 fn run_cli(args: Args) -> anyhow::Result<()> {
     // Build tokio runtime for CLI mode
     let runtime = tokio::runtime::Runtime::new()?;
-    
+
     runtime.block_on(async {
         // Determine log level from args or env
         let default_filter = if args.verbose {
@@ -250,8 +250,13 @@ fn run_cli(args: Args) -> anyhow::Result<()> {
         if args.bridge {
             cli::bridge::run_bridge_mode().await?;
         } else if let Some(prompt) = args.prompt {
-            cli::runner::run_single_prompt(&db, &prompt, args.agent.as_deref(), args.model.as_deref())
-                .await?;
+            cli::runner::run_single_prompt(
+                &db,
+                &prompt,
+                args.agent.as_deref(),
+                args.model.as_deref(),
+            )
+            .await?;
         } else {
             cli::runner::run_interactive(&db, args.agent.as_deref(), args.model.as_deref()).await?;
         }

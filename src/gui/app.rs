@@ -13,13 +13,13 @@ use super::components::{ScrollbarDragState, TextInput};
 use super::state::{Conversation, MessageRole};
 use super::theme::Theme;
 use crate::agents::{AgentExecutor, AgentManager, UserMode};
-use serdes_ai_core::messages::ImageMediaType;
 use crate::config::{PdfMode, Settings};
 use crate::db::Database;
 use crate::mcp::McpManager;
 use crate::messaging::{AgentEvent, Message, MessageBus, ToolStatus};
 use crate::models::ModelRegistry;
 use crate::tools::SpotToolRegistry;
+use serdes_ai_core::messages::ImageMediaType;
 
 actions!(
     stockpot_gui,
@@ -382,8 +382,8 @@ impl ChatApp {
         );
 
         // Process PDF attachments based on current mode
-        use crate::gui::pdf_processing::{render_pdf_to_images, extract_pdf_text};
-        
+        use crate::gui::pdf_processing::{extract_pdf_text, render_pdf_to_images};
+
         let pdf_attachments: Vec<_> = self
             .pending_attachments
             .iter()
@@ -873,7 +873,7 @@ impl ChatApp {
     /// Handle file drops - add to pending attachments instead of sending immediately
     fn handle_file_drop(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
         use crate::gui::image_processing::{is_image_file, process_image_from_path};
-        use crate::gui::pdf_processing::{is_pdf_file, get_pdf_preview};
+        use crate::gui::pdf_processing::{get_pdf_preview, is_pdf_file};
 
         let dropped_paths: Vec<_> = paths.paths().to_vec();
 
@@ -1066,10 +1066,7 @@ impl ChatApp {
         if !self.handle_clipboard_paste(cx) {
             // Not an image, trigger normal text paste in the input
             // Dispatch the Paste action to the TextInput
-            window.dispatch_action(
-                Box::new(super::components::Paste),
-                cx,
-            );
+            window.dispatch_action(Box::new(super::components::Paste), cx);
         }
     }
 

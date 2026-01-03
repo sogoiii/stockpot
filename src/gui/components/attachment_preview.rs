@@ -147,7 +147,11 @@ where
         .and_then(|data| png_to_image_source(data));
     let has_thumbnail = image_source.is_some();
     let filename = truncate_filename(&pdf.filename, 12);
-    let page_info = format!("{} page{}", pdf.page_count, if pdf.page_count == 1 { "" } else { "s" });
+    let page_info = format!(
+        "{} page{}",
+        pdf.page_count,
+        if pdf.page_count == 1 { "" } else { "s" }
+    );
 
     div()
         .id(SharedString::from(format!("attachment-{}", index)))
@@ -234,7 +238,12 @@ where
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .child(div().text_size(px(14.0)).text_color(rgb(0xffffff)).child("×"))
+        .child(
+            div()
+                .text_size(px(14.0))
+                .text_color(rgb(0xffffff))
+                .child("×"),
+        )
         .on_mouse_down(MouseButton::Left, move |_, _, _| {
             on_remove(index);
         })

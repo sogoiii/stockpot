@@ -10,7 +10,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PdfMode {
     #[default]
-    Image,       // Convert PDF pages to images
+    Image, // Convert PDF pages to images
     TextExtract, // Extract text content from PDF
 }
 
@@ -25,7 +25,7 @@ impl std::fmt::Display for PdfMode {
 
 impl std::str::FromStr for PdfMode {
     type Err = ();
-    
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "text" | "text_extract" | "extract" => Ok(PdfMode::TextExtract),
@@ -159,9 +159,7 @@ impl<'a> Settings<'a> {
 
     /// Get PDF processing mode (default: Image)
     pub fn pdf_mode(&self) -> PdfMode {
-        self.get_or("pdf_mode", "image")
-            .parse()
-            .unwrap_or_default()
+        self.get_or("pdf_mode", "image").parse().unwrap_or_default()
     }
 
     /// Set PDF processing mode

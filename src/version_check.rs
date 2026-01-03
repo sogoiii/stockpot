@@ -9,8 +9,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// GitHub API endpoint for latest release
-const GITHUB_RELEASES_URL: &str =
-    "https://api.github.com/repos/fed-stew/stockpot/releases/latest";
+const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/fed-stew/stockpot/releases/latest";
 
 /// Current application version (from Cargo.toml)
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -166,11 +165,11 @@ pub fn print_update_notification_blocking() {
 /// Print the update message to stderr
 pub fn print_update_message(release: &LatestRelease) {
     use nu_ansi_term::{Color, Style};
-    
+
     let yellow = Style::new().fg(Color::Yellow).bold();
     let cyan = Style::new().fg(Color::Cyan);
     let dim = Style::new().dimmed();
-    
+
     eprintln!();
     eprintln!(
         "{} A new version of stockpot is available: {} → {}",
@@ -178,10 +177,7 @@ pub fn print_update_message(release: &LatestRelease) {
         dim.paint(CURRENT_VERSION),
         cyan.paint(&release.version)
     );
-    eprintln!(
-        "  {}",
-        dim.paint(&release.html_url)
-    );
+    eprintln!("  {}", dim.paint(&release.html_url));
     eprintln!();
 }
 
