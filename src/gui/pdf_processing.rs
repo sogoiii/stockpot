@@ -1,0 +1,189 @@
+//! PDF processing utilities for attachment handling
+//!
+//! Provides functions to:
+//! - Detect PDF files
+//! - Get PDF preview (page count, thumbnail of first page)
+//! - Render PDF pages to images (Image mode)
+//! - Extract text from PDF pages (Text Extract mode)
+
+use std::path::Path;
+
+use image::{DynamicImage, RgbaImage};
+use mupdf::{Colorspace, Document, Matrix};
+
+use crate::gui::app::{PendingImage, MAX_IMAGE_DIMENSION};
+use crate::gui::image_processing::process_image_from_bytes;
+
+/// Maximum number of PDF pages to process
+pub const MAX_PDF_PAGES: usize = 20;
+
+/// Maximum characters to extract in text mode (~25k tokens)
+pub const MAX_PDF_TEXT_CHARS: usize = 100_000;
+
+/// DPI for rendering PDF pages (150 is good balance of quality/size)
+const RENDER_DPI: f32 = 150.0;
+
+/// PDF preview information
+pub struct PdfPreview {
+    pub page_count: u32,
+    pub thumbnail_data: Vec<u8>,
+}
+
+/// Check if a file path points to a PDF
+pub fn is_pdf_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+}
+
+/// Get PDF preview: page count and first page thumbnail
+pub fn get_pdf_preview(path: &Path) -> anyhow::Result<PdfPreview> {
+    let document = Document::open(path.to_str().ok_or_else(|| {
+        anyhow::anyhow!("Invalid path encoding")
+    })?)?;
+    
+    let page_count = document.page_count()? as u32;
+    
+    // Render first page as thumbnail (at lower DPI for speed)
+    let thumbnail_data = if page_count > 0 {
+        let page = document.load_page(0)?;
+        let matrix = Matrix::new_scale(1.0, 1.0); // 72 DPI for thumbnail
+        let pixmap = page.to_pixmap(&matrix, &Colorspace::device_rgb(), true, false)?;
+        
+        let width = pixmap.width();
+        let height = pixmap.height();
+        let samples = pixmap.samples();
+
+        // Convert RGB to RGBA
+        let rgba_data: Vec<u8> = samples
+            .chunks(3)
+            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+            .collect();
+
+        let img = RgbaImage::from_raw(width, height, rgba_data)
+            .ok_or_else(|| anyhow::anyhow!("Failed to create image from pixmap"))?;
+        
+        // Create thumbnail (fit in 120x120)
+        let thumbnail = DynamicImage::ImageRgba8(img).thumbnail(120, 120);
+        
+        let mut buffer = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buffer);
+        thumbnail.write_to(&mut cursor, image::ImageFormat::Png)?;
+        buffer
+    } else {
+        Vec::new()
+    };
+    
+    Ok(PdfPreview {
+        page_count,
+        thumbnail_data,
+    })
+}
+
+/// Render all PDF pages to images (for Image mode)
+///
+/// Returns a vector of PendingImage, one per page (up to MAX_PDF_PAGES)
+pub fn render_pdf_to_images(path: &Path, _max_dimension: u32) -> anyhow::Result<Vec<PendingImage>> {
+    let document = Document::open(path.to_str().ok_or_else(|| {
+        anyhow::anyhow!("Invalid path encoding")
+    })?)?;
+    
+    let page_count = document.page_count()?;
+    let pages_to_render = page_count.min(MAX_PDF_PAGES as i32);
+    
+    let filename_stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("pdf");
+    
+    let mut images = Vec::new();
+    
+    // Calculate scale factor for target DPI
+    let scale = RENDER_DPI / 72.0;
+    let matrix = Matrix::new_scale(scale, scale);
+    
+    for i in 0..pages_to_render {
+        let page = document.load_page(i)?;
+        let pixmap = page.to_pixmap(&matrix, &Colorspace::device_rgb(), true, false)?;
+        
+        let width = pixmap.width();
+        let height = pixmap.height();
+        let samples = pixmap.samples();
+
+        // Convert RGB to RGBA (mupdf returns RGB, image crate needs RGBA)
+        let rgba_data: Vec<u8> = samples
+            .chunks(3)
+            .flat_map(|rgb| [rgb[0], rgb[1], rgb[2], 255])
+            .collect();
+        
+        // Encode as PNG
+        let img = RgbaImage::from_raw(width, height, rgba_data)
+            .ok_or_else(|| anyhow::anyhow!("Failed to create image from pixmap"))?;
+        
+        let mut png_buffer = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut png_buffer);
+        DynamicImage::ImageRgba8(img).write_to(&mut cursor, image::ImageFormat::Png)?;
+        
+        // Process through existing image pipeline (resize if needed, generate thumbnail)
+        let page_filename = format!("{}_page_{}.png", filename_stem, i + 1);
+        let pending = process_image_from_bytes(&png_buffer, Some(page_filename))?;
+        images.push(pending);
+    }
+    
+    Ok(images)
+}
+
+/// Extract text from all PDF pages (for Text Extract mode)
+///
+/// Returns concatenated text with page separators
+pub fn extract_pdf_text(path: &Path) -> anyhow::Result<String> {
+    let document = Document::open(path.to_str().ok_or_else(|| {
+        anyhow::anyhow!("Invalid path encoding")
+    })?)?;
+    
+    let page_count = document.page_count()?;
+    let mut full_text = String::new();
+    let mut total_chars = 0;
+    
+    for i in 0..page_count {
+        if total_chars >= MAX_PDF_TEXT_CHARS {
+            full_text.push_str("\n\n[... text truncated due to length limit ...]");
+            break;
+        }
+        
+        let page = document.load_page(i)?;
+        let text = page.to_text()?;
+        
+        if i > 0 {
+            full_text.push_str("\n\n");
+        }
+        full_text.push_str(&format!("--- Page {} ---\n", i + 1));
+        full_text.push_str(&text);
+        
+        total_chars = full_text.len();
+    }
+    
+    // Final truncation check
+    if full_text.len() > MAX_PDF_TEXT_CHARS {
+        full_text.truncate(MAX_PDF_TEXT_CHARS);
+        full_text.push_str("\n\n[... text truncated due to length limit ...]");
+    }
+    
+    Ok(full_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_pdf_file() {
+        assert!(is_pdf_file(Path::new("document.pdf")));
+        assert!(is_pdf_file(Path::new("document.PDF")));
+        assert!(is_pdf_file(Path::new("/path/to/file.pdf")));
+        assert!(!is_pdf_file(Path::new("image.png")));
+        assert!(!is_pdf_file(Path::new("document.txt")));
+        assert!(!is_pdf_file(Path::new("no_extension")));
+    }
+}

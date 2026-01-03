@@ -112,6 +112,32 @@ fn run_gui(args: Args) -> anyhow::Result<()> {
     use gpui_component::{Root, Theme, ThemeMode};
     use stockpot::gui;
 
+    // Initialize tracing for GUI mode
+    let default_filter = if args.verbose {
+        "trace"
+    } else if args.debug {
+        "debug"
+    } else {
+        "warn"
+    };
+
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(true)
+                .with_thread_ids(false)
+                .with_writer(std::io::stderr),
+        )
+        .init();
+
+    if args.debug || args.verbose {
+        tracing::info!("Debug logging enabled for GUI mode");
+    }
+
     // Create a Tokio runtime for async operations
     let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let _guard = runtime.enter();

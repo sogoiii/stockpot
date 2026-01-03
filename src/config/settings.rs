@@ -6,6 +6,34 @@ use crate::agents::UserMode;
 use crate::db::Database;
 use thiserror::Error;
 
+/// PDF processing mode for attachments
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PdfMode {
+    #[default]
+    Image,       // Convert PDF pages to images
+    TextExtract, // Extract text content from PDF
+}
+
+impl std::fmt::Display for PdfMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PdfMode::Image => write!(f, "image"),
+            PdfMode::TextExtract => write!(f, "text"),
+        }
+    }
+}
+
+impl std::str::FromStr for PdfMode {
+    type Err = ();
+    
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "text" | "text_extract" | "extract" => Ok(PdfMode::TextExtract),
+            _ => Ok(PdfMode::Image),
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SettingsError {
     #[error("Database error: {0}")]
@@ -127,6 +155,18 @@ impl<'a> Settings<'a> {
     /// Set the user mode.
     pub fn set_user_mode(&self, mode: UserMode) -> Result<(), SettingsError> {
         self.set("user_mode", &mode.to_string())
+    }
+
+    /// Get PDF processing mode (default: Image)
+    pub fn pdf_mode(&self) -> PdfMode {
+        self.get_or("pdf_mode", "image")
+            .parse()
+            .unwrap_or_default()
+    }
+
+    /// Set PDF processing mode
+    pub fn set_pdf_mode(&self, mode: PdfMode) -> Result<(), SettingsError> {
+        self.set("pdf_mode", &mode.to_string())
     }
 
     // Agent model pin management

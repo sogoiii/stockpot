@@ -139,11 +139,6 @@ pub fn default_models() -> Vec<ModelConfig> {
     ]
 }
 
-/// Generate default models.json content.
-pub fn default_models_json() -> String {
-    serde_json::to_string_pretty(&default_models()).unwrap_or_else(|_| "[]".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,12 +160,5 @@ mod tests {
                 model.name
             );
         }
-    }
-
-    #[test]
-    fn test_default_models_json_valid() {
-        let json = default_models_json();
-        let parsed: Vec<ModelConfig> = serde_json::from_str(&json).expect("Should parse");
-        assert!(!parsed.is_empty());
     }
 }

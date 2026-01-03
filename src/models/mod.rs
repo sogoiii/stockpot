@@ -14,5 +14,5 @@ pub use config::{
     has_api_key, resolve_api_key, resolve_env_var, CustomEndpoint, ModelConfig, ModelRegistry,
     ModelType,
 };
-pub use defaults::{default_models, default_models_json};
+pub use defaults::default_models;
 pub use settings::ModelSettings;

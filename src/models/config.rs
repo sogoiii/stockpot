@@ -190,44 +190,12 @@ impl ModelRegistry {
         Self::default()
     }
 
-    /// Load models from all standard config locations (legacy JSON files).
-    /// Prefer `load_from_db()` for new code.
+    /// Load models with in-memory defaults only.
+    /// **Deprecated**: Use `load_from_db()` instead for database-backed storage.
+    #[deprecated(note = "Use load_from_db() instead")]
     pub fn load() -> Result<Self, ModelConfigError> {
-        let config_dir = Self::config_dir()?;
         let mut registry = Self::new();
-
-        // Create config dir if needed
-        std::fs::create_dir_all(&config_dir)?;
-
-        // Create default models.json if it doesn't exist
-        let models_path = config_dir.join("models.json");
-        if !models_path.exists() {
-            let defaults = crate::models::defaults::default_models_json();
-            std::fs::write(&models_path, defaults)?;
-        }
-
-        // Load built-in models
-        if models_path.exists() {
-            registry.load_file(&models_path)?;
-        }
-
-        // Load ChatGPT OAuth models
-        let chatgpt_path = config_dir.join("chatgpt_models.json");
-        if chatgpt_path.exists() {
-            registry.load_file(&chatgpt_path)?;
-        }
-
-        // Load Claude Code OAuth models
-        let claude_path = config_dir.join("claude_models.json");
-        if claude_path.exists() {
-            registry.load_file(&claude_path)?;
-        }
-
-        // Fallback: add in-memory defaults if still empty
-        if registry.is_empty() {
-            registry.add_builtin_defaults();
-        }
-
+        registry.add_builtin_defaults();
         Ok(registry)
     }
 
@@ -280,29 +248,7 @@ impl ModelRegistry {
             registry.models.insert(config.name.clone(), config);
         }
 
-        // Also load legacy JSON files (for OAuth models, etc.)
-        registry.load_legacy_json_files()?;
-
         Ok(registry)
-    }
-
-    /// Load legacy JSON files (OAuth models, etc.).
-    fn load_legacy_json_files(&mut self) -> Result<(), ModelConfigError> {
-        let config_dir = Self::config_dir()?;
-
-        // Load ChatGPT OAuth models
-        let chatgpt_path = config_dir.join("chatgpt_models.json");
-        if chatgpt_path.exists() {
-            self.load_file(&chatgpt_path)?;
-        }
-
-        // Load Claude Code OAuth models
-        let claude_path = config_dir.join("claude_models.json");
-        if claude_path.exists() {
-            self.load_file(&claude_path)?;
-        }
-
-        Ok(())
     }
 
     /// Ensure built-in default models exist in the database.
@@ -441,32 +387,12 @@ impl ModelRegistry {
         self.models.len()
     }
 
-    /// Reload the registry from config files (legacy).
-    /// Call this after OAuth auth to pick up new models.
-    /// For database-backed registries, use `reload_from_db()` instead.
+    /// Reload the registry with in-memory defaults only.
+    /// **Deprecated**: Use `reload_from_db()` instead for database-backed storage.
+    #[deprecated(note = "Use reload_from_db() instead")]
     pub fn reload(&mut self) -> Result<(), ModelConfigError> {
         self.models.clear();
-
-        let config_dir = Self::config_dir()?;
-
-        // Load built-in models
-        let models_path = config_dir.join("models.json");
-        if models_path.exists() {
-            self.load_file(&models_path)?;
-        }
-
-        // Load ChatGPT OAuth models
-        let chatgpt_path = config_dir.join("chatgpt_models.json");
-        if chatgpt_path.exists() {
-            self.load_file(&chatgpt_path)?;
-        }
-
-        // Load Claude Code OAuth models
-        let claude_path = config_dir.join("claude_models.json");
-        if claude_path.exists() {
-            self.load_file(&claude_path)?;
-        }
-
+        self.add_builtin_defaults();
         Ok(())
     }
 

@@ -13,7 +13,8 @@ use super::components::{ScrollbarDragState, TextInput};
 use super::state::{Conversation, MessageRole};
 use super::theme::Theme;
 use crate::agents::{AgentExecutor, AgentManager, UserMode};
-use crate::config::Settings;
+use serdes_ai_core::messages::ImageMediaType;
+use crate::config::{PdfMode, Settings};
 use crate::db::Database;
 use crate::mcp::McpManager;
 use crate::messaging::{AgentEvent, Message, MessageBus, ToolStatus};
@@ -31,16 +32,23 @@ actions!(
         NextAgent,
         PrevAgent,
         CloseDialog,
+        PasteAttachment,
     ]
 );
 
 mod agent_dropdown;
+mod attachments;
 mod error;
 mod input;
 mod messages;
 mod model_dropdown;
 mod settings;
 mod toolbar;
+
+pub use attachments::{
+    PendingAttachment, PendingFile, PendingImage, PendingPdf, MAX_ATTACHMENTS, MAX_IMAGE_DIMENSION,
+    THUMBNAIL_SIZE,
+};
 
 /// Main application state
 pub struct ChatApp {
@@ -56,6 +64,8 @@ pub struct ChatApp {
     current_model: String,
     /// Current user mode (controls agent visibility)
     user_mode: UserMode,
+    /// PDF processing mode (image vs text extraction)
+    pdf_mode: PdfMode,
     /// Color theme
     theme: Theme,
     /// Whether we're currently generating a response
@@ -132,6 +142,8 @@ pub struct ChatApp {
     api_keys_list: Vec<String>,
     api_key_new_name: String,
     api_key_new_value: String,
+    /// Pending attachments (images and files) waiting to be sent
+    pending_attachments: Vec<PendingAttachment>,
 }
 
 impl ChatApp {
@@ -147,6 +159,7 @@ impl ChatApp {
         let settings = Settings::new(&db);
         let current_model = settings.model();
         let user_mode = settings.user_mode();
+        let pdf_mode = settings.pdf_mode();
 
         // Initialize model registry
         let model_registry = Arc::new(ModelRegistry::load_from_db(&db).unwrap_or_default());
@@ -178,6 +191,7 @@ impl ChatApp {
             current_agent,
             current_model,
             user_mode,
+            pdf_mode,
             theme,
             is_generating: false,
             message_bus,
@@ -222,6 +236,7 @@ impl ChatApp {
             api_keys_list: Vec::new(),
             api_key_new_name: String::new(),
             api_key_new_value: String::new(),
+            pending_attachments: Vec::new(),
         };
 
         // Start message listener
@@ -315,45 +330,287 @@ impl ChatApp {
     fn send_message(&mut self, cx: &mut Context<Self>) {
         let content = self.text_input.read(cx).content().to_string();
         let text = content.trim().to_string();
+        let has_attachments = !self.pending_attachments.is_empty();
 
-        if text.is_empty() || self.is_generating {
+        // Need either text or attachments
+        if text.is_empty() && !has_attachments {
             return;
         }
 
-        // Add user message to conversation
-        self.conversation.add_user_message(&text);
+        if self.is_generating {
+            return;
+        }
 
-        // Clear input
+        // Build the message including attachments
+        let mut full_message = text.clone();
+
+        // Add file references for non-image attachments
+        let file_refs: Vec<String> = self
+            .pending_attachments
+            .iter()
+            .filter_map(|att| match att {
+                PendingAttachment::File(f) => Some(format!("File: {}", f.path.display())),
+                _ => None,
+            })
+            .collect();
+
+        if !file_refs.is_empty() {
+            if !full_message.is_empty() {
+                full_message.push_str("\n\n");
+            }
+            full_message.push_str(&file_refs.join("\n"));
+        }
+
+        // Collect images for vision model support
+        // Each image is (PNG bytes, ImageMediaType::Png)
+        let mut images: Vec<(Vec<u8>, ImageMediaType)> = self
+            .pending_attachments
+            .iter()
+            .filter_map(|att| match att {
+                PendingAttachment::Image(img) => {
+                    Some((img.processed_data.clone(), ImageMediaType::Png))
+                }
+                _ => None,
+            })
+            .collect();
+
+        // Log collected images
+        tracing::info!(
+            image_count = images.len(),
+            total_bytes = images.iter().map(|(b, _)| b.len()).sum::<usize>(),
+            "Collected images for sending"
+        );
+
+        // Process PDF attachments based on current mode
+        use crate::gui::pdf_processing::{render_pdf_to_images, extract_pdf_text};
+        
+        let pdf_attachments: Vec<_> = self
+            .pending_attachments
+            .iter()
+            .filter_map(|att| match att {
+                PendingAttachment::Pdf(pdf) => Some(pdf.clone()),
+                _ => None,
+            })
+            .collect();
+
+        if !pdf_attachments.is_empty() {
+            match self.pdf_mode {
+                PdfMode::Image => {
+                    // IMAGE MODE: Render PDF pages to images
+                    for pdf in &pdf_attachments {
+                        tracing::info!(
+                            filename = %pdf.filename,
+                            page_count = pdf.page_count,
+                            "Converting PDF to images"
+                        );
+                        match render_pdf_to_images(&pdf.path, MAX_IMAGE_DIMENSION) {
+                            Ok(page_images) => {
+                                let pages_rendered = page_images.len();
+                                for page in page_images {
+                                    images.push((page.processed_data, ImageMediaType::Png));
+                                }
+                                tracing::info!(
+                                    filename = %pdf.filename,
+                                    pages_rendered = pages_rendered,
+                                    "PDF pages converted to images"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    filename = %pdf.filename,
+                                    error = %e,
+                                    "Failed to render PDF to images"
+                                );
+                                self.error_message = Some(format!(
+                                    "Failed to convert PDF '{}': {}",
+                                    pdf.filename, e
+                                ));
+                            }
+                        }
+                    }
+                }
+                PdfMode::TextExtract => {
+                    // TEXT MODE: Extract text and append to message
+                    for pdf in &pdf_attachments {
+                        tracing::info!(
+                            filename = %pdf.filename,
+                            page_count = pdf.page_count,
+                            "Extracting text from PDF"
+                        );
+                        match extract_pdf_text(&pdf.path) {
+                            Ok(text) => {
+                                if !full_message.is_empty() {
+                                    full_message.push_str("\n\n");
+                                }
+                                full_message.push_str(&format!(
+                                    "--- PDF: {} ({} pages) ---\n{}",
+                                    pdf.filename, pdf.page_count, text
+                                ));
+                                tracing::info!(
+                                    filename = %pdf.filename,
+                                    text_length = text.len(),
+                                    "PDF text extracted"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    filename = %pdf.filename,
+                                    error = %e,
+                                    "Failed to extract PDF text"
+                                );
+                                self.error_message = Some(format!(
+                                    "Failed to extract text from '{}': {}",
+                                    pdf.filename, e
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check if the model supports vision - if not, warn and strip images
+        let has_images = !images.is_empty();
+        if has_images {
+            // Get the effective model for the current agent
+            let effective_model_name = {
+                let settings = Settings::new(&self.db);
+                settings
+                    .get_agent_pinned_model(&self.current_agent)
+                    .unwrap_or_else(|| self.current_model.clone())
+            };
+
+            // Check if model supports vision
+            let model_config = self.model_registry.get(&effective_model_name);
+
+            // Log the vision check for debugging
+            tracing::info!(
+                model_name = %effective_model_name,
+                model_found = model_config.is_some(),
+                supports_vision = model_config.map(|m| m.supports_vision),
+                "Vision support check"
+            );
+
+            // Default to TRUE if model not found (assume modern models support vision)
+            let supports_vision = model_config.map(|m| m.supports_vision).unwrap_or(true);
+
+            if !supports_vision {
+                // Show warning to user
+                tracing::warn!(
+                    model_name = %effective_model_name,
+                    "Model doesn't support vision, stripping images"
+                );
+                self.error_message = Some(format!(
+                    "⚠️ Model '{}' doesn't support images. Images removed from message.",
+                    effective_model_name
+                ));
+                // Strip images
+                images.clear();
+            }
+        }
+
+        // Add user message to conversation
+        if has_attachments {
+            let attachment_note = format!(
+                "{}\n\n📎 {} attachment(s)",
+                if text.is_empty() {
+                    "(Image attached)".to_string()
+                } else {
+                    text.clone()
+                },
+                self.pending_attachments.len()
+            );
+            self.conversation.add_user_message(&attachment_note);
+        } else {
+            self.conversation.add_user_message(&text);
+        }
+
+        // Clear input and attachments
         self.text_input.update(cx, |input, cx| {
             input.clear(cx);
         });
+        self.pending_attachments.clear();
 
-        // Execute agent
-        self.execute_agent(text, cx);
+        // Execute agent with message and images
+        self.execute_agent(full_message, images, cx);
 
         cx.notify();
     }
 
-    /// Execute the agent with the given prompt
-    fn execute_agent(&mut self, prompt: String, cx: &mut Context<Self>) {
-        let agent_name = self.current_agent.clone();
-        let db = self.db.clone();
-        let agents = self.agents.clone();
-        let model_registry = self.model_registry.clone();
-        let default_model = self.current_model.clone();
-        let tool_registry = self.tool_registry.clone();
-        let mcp_manager = self.mcp_manager.clone();
-        let message_bus_sender = self.message_bus.sender();
-        let history = if self.message_history.is_empty() {
-            None
-        } else {
-            Some(self.message_history.clone())
+    /// Execute the agent with the given prompt and optional images
+    fn execute_agent(
+        &mut self,
+        prompt: String,
+        images: Vec<(Vec<u8>, ImageMediaType)>,
+        cx: &mut Context<Self>,
+    ) {
+        // Bundle all data that needs to be moved into the async closure
+        // This ensures everything is captured as a single unit
+        struct ExecuteData {
+            agent_name: String,
+            db: Rc<Database>,
+            agents: Arc<AgentManager>,
+            model_registry: Arc<ModelRegistry>,
+            default_model: String,
+            tool_registry: Arc<SpotToolRegistry>,
+            mcp_manager: Arc<McpManager>,
+            message_bus_sender: crate::messaging::MessageSender,
+            prompt: String,
+            images: Vec<(Vec<u8>, ImageMediaType)>,
+            history: Option<Vec<serdes_ai_core::ModelRequest>>,
+        }
+
+        let data = ExecuteData {
+            agent_name: self.current_agent.clone(),
+            db: self.db.clone(),
+            agents: self.agents.clone(),
+            model_registry: self.model_registry.clone(),
+            default_model: self.current_model.clone(),
+            tool_registry: self.tool_registry.clone(),
+            mcp_manager: self.mcp_manager.clone(),
+            message_bus_sender: self.message_bus.sender(),
+            prompt,
+            images,
+            history: if self.message_history.is_empty() {
+                None
+            } else {
+                Some(self.message_history.clone())
+            },
         };
+
+        // Log BEFORE the spawn to verify data is correct in struct
+        tracing::info!(
+            image_count_in_struct = data.images.len(),
+            prompt_len_in_struct = data.prompt.len(),
+            "execute_agent: data struct created BEFORE spawn"
+        );
 
         self.is_generating = true;
         self.error_message = None;
 
         cx.spawn(async move |this: WeakEntity<ChatApp>, cx: &mut AsyncApp| {
+            // Destructure the data bundle
+            let ExecuteData {
+                agent_name,
+                db,
+                agents,
+                model_registry,
+                default_model,
+                tool_registry,
+                mcp_manager,
+                message_bus_sender,
+                prompt,
+                images,
+                history,
+            } = data;
+
+            // Log images inside async block to verify they survived the move
+            tracing::info!(
+                image_count = images.len(),
+                prompt_len = prompt.len(),
+                "execute_agent async: checking images before execution"
+            );
+
             // Look up the agent by name inside the async block
             let Some(agent) = agents.get(&agent_name) else {
                 this.update(cx, |app, cx| {
@@ -376,17 +633,35 @@ impl ChatApp {
                     .unwrap_or_else(|| default_model.clone())
             };
 
-            // Execute the agent
-            let result = executor
-                .execute_with_bus(
-                    agent,
-                    &effective_model,
-                    &prompt,
-                    history,
-                    &tool_registry,
-                    &mcp_manager,
-                )
-                .await;
+            // Execute the agent - use execute_with_images if we have images
+            tracing::info!(
+                images_empty = images.is_empty(),
+                "execute_agent: about to choose execution path"
+            );
+            let result = if images.is_empty() {
+                executor
+                    .execute_with_bus(
+                        agent,
+                        &effective_model,
+                        &prompt,
+                        history,
+                        &tool_registry,
+                        &mcp_manager,
+                    )
+                    .await
+            } else {
+                executor
+                    .execute_with_images(
+                        agent,
+                        &effective_model,
+                        &prompt,
+                        &images,
+                        history,
+                        &tool_registry,
+                        &mcp_manager,
+                    )
+                    .await
+            };
 
             // Update state based on result
             this.update(cx, |app, cx| {
@@ -595,36 +870,207 @@ impl ChatApp {
         self.api_keys_list = self.db.list_api_keys().unwrap_or_default();
     }
 
-    /// Handle file drops
+    /// Handle file drops - add to pending attachments instead of sending immediately
     fn handle_file_drop(&mut self, paths: &ExternalPaths, cx: &mut Context<Self>) {
-        let file_paths: Vec<String> = paths
-            .paths()
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+        use crate::gui::image_processing::{is_image_file, process_image_from_path};
+        use crate::gui::pdf_processing::{is_pdf_file, get_pdf_preview};
 
-        if file_paths.is_empty() {
+        let dropped_paths: Vec<_> = paths.paths().to_vec();
+
+        if dropped_paths.is_empty() {
             return;
         }
 
-        // Create a message mentioning the dropped files
-        let files_text = if file_paths.len() == 1 {
-            format!("I'm sharing this file with you: {}", file_paths[0])
-        } else {
-            format!(
-                "I'm sharing these files with you:\n{}",
-                file_paths
-                    .iter()
-                    .map(|p| format!("- {}", p))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        };
+        // Check how many we can add
+        let available_slots = MAX_ATTACHMENTS.saturating_sub(self.pending_attachments.len());
+        if available_slots == 0 {
+            self.error_message = Some(format!(
+                "Maximum {} attachments reached. Remove some to add more.",
+                MAX_ATTACHMENTS
+            ));
+            cx.notify();
+            return;
+        }
 
-        // Add to conversation
-        self.conversation.add_user_message(&files_text);
-        self.execute_agent(files_text, cx);
+        // Process files (limited to available slots)
+        let paths_to_process: Vec<_> = dropped_paths.into_iter().take(available_slots).collect();
+
+        // Spawn async task to process images without blocking UI
+        cx.spawn(async move |this: WeakEntity<ChatApp>, cx: &mut AsyncApp| {
+            let mut new_attachments = Vec::new();
+
+            for path in paths_to_process {
+                if is_pdf_file(&path) {
+                    // Process PDF - get preview (page count + thumbnail)
+                    match get_pdf_preview(&path) {
+                        Ok(preview) => {
+                            let filename = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("document.pdf")
+                                .to_string();
+                            new_attachments.push(PendingAttachment::Pdf(PendingPdf {
+                                path: path.clone(),
+                                filename,
+                                page_count: preview.page_count,
+                                thumbnail_data: if preview.thumbnail_data.is_empty() {
+                                    None
+                                } else {
+                                    Some(preview.thumbnail_data)
+                                },
+                            }));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to process PDF {:?}: {}", path, e);
+                            // Fall back to treating it as a generic file
+                            let filename = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("file")
+                                .to_string();
+                            new_attachments.push(PendingAttachment::File(PendingFile {
+                                path: path.clone(),
+                                filename,
+                                extension: "pdf".to_string(),
+                            }));
+                        }
+                    }
+                } else if is_image_file(&path) {
+                    // Process image (resize, convert to PNG, generate thumbnail)
+                    match process_image_from_path(&path) {
+                        Ok(pending_image) => {
+                            new_attachments.push(PendingAttachment::Image(pending_image));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to process image {:?}: {}", path, e);
+                            // Fall back to treating it as a file
+                            let filename = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("file")
+                                .to_string();
+                            let extension = path
+                                .extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            new_attachments.push(PendingAttachment::File(PendingFile {
+                                path: path.clone(),
+                                filename,
+                                extension,
+                            }));
+                        }
+                    }
+                } else {
+                    // Non-image file
+                    let filename = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file")
+                        .to_string();
+                    let extension = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    new_attachments.push(PendingAttachment::File(PendingFile {
+                        path: path.clone(),
+                        filename,
+                        extension,
+                    }));
+                }
+            }
+
+            // Update UI with new attachments
+            this.update(cx, |app, cx| {
+                app.pending_attachments.extend(new_attachments);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+
         cx.notify();
+    }
+
+    /// Handle clipboard paste - check for images first, then text
+    pub fn handle_clipboard_paste(&mut self, cx: &mut Context<Self>) -> bool {
+        use crate::gui::image_processing::process_image_from_bytes;
+        use gpui::ClipboardEntry;
+
+        // Check if we have room for more attachments
+        if self.pending_attachments.len() >= MAX_ATTACHMENTS {
+            self.error_message = Some(format!(
+                "Maximum {} attachments reached. Remove some to add more.",
+                MAX_ATTACHMENTS
+            ));
+            cx.notify();
+            return false;
+        }
+
+        // Try to get image data from clipboard
+        if let Some(clipboard_item) = cx.read_from_clipboard() {
+            // Check for image data in clipboard entries
+            for entry in clipboard_item.entries() {
+                if let ClipboardEntry::Image(image) = entry {
+                    let image_bytes = image.bytes().to_vec();
+
+                    // Spawn async task to process the image
+                    cx.spawn(async move |this: WeakEntity<ChatApp>, cx: &mut AsyncApp| {
+                        match process_image_from_bytes(&image_bytes, None) {
+                            Ok(pending_image) => {
+                                this.update(cx, |app, cx| {
+                                    app.pending_attachments
+                                        .push(PendingAttachment::Image(pending_image));
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to process clipboard image: {}", e);
+                                this.update(cx, |app, cx| {
+                                    app.error_message =
+                                        Some("Failed to process pasted image".to_string());
+                                    cx.notify();
+                                })
+                                .ok();
+                            }
+                        }
+                    })
+                    .detach();
+
+                    return true; // Handled as image
+                }
+            }
+        }
+
+        false // Not an image, let TextInput handle as text
+    }
+
+    /// Remove an attachment by index
+    fn remove_attachment(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.pending_attachments.len() {
+            self.pending_attachments.remove(index);
+            cx.notify();
+        }
+    }
+
+    /// Handle paste action - check for image, fallback to text paste
+    fn on_paste_attachment(
+        &mut self,
+        _: &PasteAttachment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Try to paste as image attachment
+        if !self.handle_clipboard_paste(cx) {
+            // Not an image, trigger normal text paste in the input
+            // Dispatch the Paste action to the TextInput
+            window.dispatch_action(
+                Box::new(super::components::Paste),
+                cx,
+            );
+        }
     }
 
     /// Handle new conversation
@@ -785,6 +1231,7 @@ impl Render for ChatApp {
             .on_action(cx.listener(Self::next_agent))
             .on_action(cx.listener(Self::prev_agent))
             .on_action(cx.listener(Self::close_dialog))
+            .on_action(cx.listener(Self::on_paste_attachment))
             // File drag and drop support
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
                 this.handle_file_drop(paths, cx);
@@ -815,6 +1262,7 @@ pub fn register_keybindings(cx: &mut App) {
         KeyBinding::new("cmd-]", NextAgent, None),
         KeyBinding::new("cmd-[", PrevAgent, None),
         KeyBinding::new("escape", CloseDialog, None),
+        KeyBinding::new("cmd-v", PasteAttachment, None),
         // Text input keybindings
         KeyBinding::new("backspace", super::components::Backspace, Some("TextInput")),
         KeyBinding::new("delete", super::components::Delete, Some("TextInput")),

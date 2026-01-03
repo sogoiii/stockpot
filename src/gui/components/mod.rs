@@ -1,5 +1,6 @@
 //! UI Components for the GUI
 
+mod attachment_preview;
 mod chat_view;
 mod input_field;
 mod markdown_text;
@@ -21,3 +22,5 @@ pub use text_input::{
     SelectRight, Submit, TextElement, TextInput,
 };
 pub use toolbar::Toolbar;
+
+pub use attachment_preview::{render_attachment_preview, render_attachments_row};

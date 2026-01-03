@@ -21,6 +21,7 @@ use serdes_ai_core::{
     ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings, TextPart,
     ToolCallPart, ToolReturnPart,
 };
+use serdes_ai_core::messages::{ImageMediaType, UserContent, UserContentPart};
 use serdes_ai_models::{
     infer_model, openai::OpenAIChatModel, Model, ModelError, ModelProfile, ModelRequestParameters,
     StreamedResponse,
@@ -571,7 +572,7 @@ impl<'a> AgentExecutor<'a> {
             .execute_stream_internal(
                 spot_agent,
                 model_name,
-                prompt,
+                UserContent::text(prompt),
                 message_history,
                 tool_registry,
                 mcp_manager,
@@ -777,6 +778,293 @@ impl<'a> AgentExecutor<'a> {
         })
     }
 
+    /// Execute agent with images (multimodal content).
+    ///
+    /// Similar to `execute_with_bus` but accepts image data alongside text.
+    /// Images are sent as base64-encoded PNG data to vision-capable models.
+    ///
+    /// # Arguments
+    /// * `spot_agent` - The agent to execute
+    /// * `model_name` - The model to use (should be vision-capable for images)
+    /// * `prompt` - Text prompt
+    /// * `images` - Vector of (PNG bytes, media type) tuples
+    /// * `message_history` - Optional conversation history
+    /// * `tool_registry` - Available tools
+    /// * `mcp_manager` - MCP server manager
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_with_images(
+        &self,
+        spot_agent: &dyn SpotAgent,
+        model_name: &str,
+        prompt: &str,
+        images: &[(Vec<u8>, ImageMediaType)],
+        message_history: Option<Vec<ModelRequest>>,
+        tool_registry: &SpotToolRegistry,
+        mcp_manager: &McpManager,
+    ) -> Result<ExecutorResult, ExecutorError> {
+        let bus = self.bus.as_ref().ok_or(ExecutorError::Config(
+            "No message bus configured. Use with_bus() first.".into(),
+        ))?;
+
+        // Create event bridge for this agent
+        let mut bridge =
+            EventBridge::new(bus.clone(), spot_agent.name(), spot_agent.display_name());
+
+        bridge.agent_started();
+
+        // Track tool returns during streaming so we can reconstruct message history.
+        let tool_return_recorder: Arc<Mutex<Vec<ToolReturnPart>>> =
+            Arc::new(Mutex::new(Vec::new()));
+
+        // Build the user content (text + images)
+        let user_content = if images.is_empty() {
+            UserContent::text(prompt)
+        } else {
+            let mut parts = Vec::new();
+            if !prompt.is_empty() {
+                parts.push(UserContentPart::text(prompt));
+            }
+            for (image_data, media_type) in images {
+                parts.push(UserContentPart::image_binary(
+                    image_data.clone(),
+                    *media_type,
+                ));
+            }
+            UserContent::parts(parts)
+        };
+
+        // Log what we built
+        match &user_content {
+            UserContent::Text(t) => {
+                info!(text_len = t.len(), "Built text-only content")
+            }
+            UserContent::Parts(parts) => {
+                let image_parts = parts
+                    .iter()
+                    .filter(|p| matches!(p, UserContentPart::Image { .. }))
+                    .count();
+                let text_parts = parts
+                    .iter()
+                    .filter(|p| matches!(p, UserContentPart::Text { .. }))
+                    .count();
+                info!(
+                    text_parts,
+                    image_parts,
+                    total_parts = parts.len(),
+                    "Built multimodal content with images"
+                );
+            }
+        }
+
+        // Start with any provided history, then add the current user prompt.
+        let mut messages = message_history.clone().unwrap_or_default();
+        let mut user_req = ModelRequest::new();
+        user_req.add_user_prompt(user_content.clone());
+        messages.push(user_req);
+
+        // Use internal streaming execution - pass user_content which includes images!
+        let mut stream = self
+            .execute_stream_internal(
+                spot_agent,
+                model_name,
+                user_content,
+                message_history,
+                tool_registry,
+                mcp_manager,
+                Some(Arc::clone(&tool_return_recorder)),
+            )
+            .await?;
+
+        struct RawToolCall {
+            tool_name: String,
+            tool_call_id: Option<String>,
+            args_buffer: String,
+        }
+
+        // Accumulate text for the final output
+        let mut accumulated_text = String::new();
+        let mut final_run_id: Option<String> = None;
+
+        // Track per-response state so we can rebuild `ModelResponse` parts.
+        let mut current_response_text = String::new();
+        let mut completed_tool_calls: Vec<RawToolCall> = Vec::new();
+        let mut in_progress_tool_call: Option<RawToolCall> = None;
+
+        // Track tool return parts emitted by tool executors.
+        let mut expected_tool_returns: usize = 0;
+        let mut tool_return_index: usize = 0;
+        let mut pending_tool_returns: Vec<ToolReturnPart> = Vec::new();
+        let mut pending_tool_calls: std::collections::VecDeque<(String, Option<String>)> =
+            std::collections::VecDeque::new();
+
+        // Process all events through the bridge
+        while let Some(event_result) = stream.recv().await {
+            match event_result {
+                Ok(event) => {
+                    let tool_executed_info = match &event {
+                        StreamEvent::ToolExecuted {
+                            tool_name,
+                            success,
+                            error,
+                        } => Some((tool_name.clone(), *success, error.clone())),
+                        _ => None,
+                    };
+
+                    match &event {
+                        StreamEvent::RequestStart { .. } => {
+                            current_response_text.clear();
+                            completed_tool_calls.clear();
+                            in_progress_tool_call = None;
+                        }
+                        StreamEvent::TextDelta { text } => {
+                            accumulated_text.push_str(text);
+                            current_response_text.push_str(text);
+                        }
+                        StreamEvent::ToolCallStart {
+                            tool_name,
+                            tool_call_id,
+                        } => {
+                            if let Some(tc) = in_progress_tool_call.take() {
+                                completed_tool_calls.push(tc);
+                            }
+                            in_progress_tool_call = Some(RawToolCall {
+                                tool_name: tool_name.clone(),
+                                tool_call_id: tool_call_id.clone(),
+                                args_buffer: String::new(),
+                            });
+                        }
+                        StreamEvent::ToolCallDelta { delta } => {
+                            if let Some(tc) = in_progress_tool_call.as_mut() {
+                                tc.args_buffer.push_str(delta);
+                            }
+                        }
+                        StreamEvent::ResponseComplete { .. } => {
+                            if let Some(tc) = in_progress_tool_call.take() {
+                                completed_tool_calls.push(tc);
+                            }
+
+                            pending_tool_calls = completed_tool_calls
+                                .iter()
+                                .map(|tc| (tc.tool_name.clone(), tc.tool_call_id.clone()))
+                                .collect();
+
+                            let mut response_parts: Vec<ModelResponsePart> = Vec::new();
+
+                            if !current_response_text.is_empty() {
+                                response_parts.push(ModelResponsePart::Text(TextPart::new(
+                                    current_response_text.clone(),
+                                )));
+                            }
+
+                            for tc in completed_tool_calls.drain(..) {
+                                let mut part = ToolCallPart::new(
+                                    tc.tool_name,
+                                    ToolCallArgs::from(tc.args_buffer),
+                                );
+                                if let Some(id) = tc.tool_call_id {
+                                    part = part.with_tool_call_id(id);
+                                }
+                                response_parts.push(ModelResponsePart::ToolCall(part));
+                            }
+
+                            if !response_parts.is_empty() {
+                                let response = ModelResponse::with_parts(response_parts)
+                                    .with_model_name(model_name.to_string());
+
+                                let mut response_req = ModelRequest::new();
+                                response_req
+                                    .parts
+                                    .push(ModelRequestPart::ModelResponse(Box::new(response)));
+                                messages.push(response_req);
+                            }
+
+                            expected_tool_returns = pending_tool_calls.len();
+                            pending_tool_returns.clear();
+                            current_response_text.clear();
+                        }
+                        StreamEvent::RunComplete { run_id } => {
+                            final_run_id = Some(run_id.clone());
+                        }
+                        _ => {}
+                    }
+
+                    if let Some((tool_name, success, error)) = tool_executed_info {
+                        if expected_tool_returns > 0 {
+                            let tool_call_id =
+                                pending_tool_calls.pop_front().and_then(|(_, id)| id);
+
+                            let mut part = {
+                                let next_part = {
+                                    let recorded = tool_return_recorder.lock().await;
+                                    recorded.get(tool_return_index).cloned()
+                                };
+
+                                if let Some(part) = next_part {
+                                    tool_return_index += 1;
+                                    part
+                                } else {
+                                    let msg = error.unwrap_or_else(|| {
+                                        if success {
+                                            "Tool executed but no tool return was recorded"
+                                                .to_string()
+                                        } else {
+                                            "Tool failed".to_string()
+                                        }
+                                    });
+                                    ToolReturnPart::error(&tool_name, msg)
+                                }
+                            };
+
+                            if part.tool_call_id.is_none() {
+                                if let Some(id) = tool_call_id {
+                                    part = part.with_tool_call_id(id);
+                                }
+                            }
+
+                            pending_tool_returns.push(part);
+
+                            if pending_tool_returns.len() == expected_tool_returns {
+                                let mut tool_req = ModelRequest::new();
+                                for part in pending_tool_returns.drain(..) {
+                                    tool_req.parts.push(ModelRequestPart::ToolReturn(part));
+                                }
+                                messages.push(tool_req);
+                                expected_tool_returns = 0;
+                            }
+                        }
+                    }
+
+                    bridge.process(event);
+                }
+                Err(e) => {
+                    bridge.agent_error(&e.to_string());
+                    return Err(e);
+                }
+            }
+        }
+
+        // Flush any tool returns we managed to capture
+        if !pending_tool_returns.is_empty() {
+            let mut tool_req = ModelRequest::new();
+            for part in pending_tool_returns {
+                tool_req.parts.push(ModelRequestPart::ToolReturn(part));
+            }
+            messages.push(tool_req);
+        }
+
+        let run_id = final_run_id.ok_or_else(|| {
+            ExecutorError::Execution("Stream ended without RunComplete event".into())
+        })?;
+
+        bridge.agent_completed(&run_id);
+
+        Ok(ExecutorResult {
+            output: accumulated_text,
+            messages,
+            run_id,
+        })
+    }
+
     /// Execute an agent with streaming output.
     ///
     /// **Note**: For new code, prefer [`execute_with_bus`] which automatically
@@ -810,7 +1098,7 @@ impl<'a> AgentExecutor<'a> {
         self.execute_stream_internal(
             spot_agent,
             model_name,
-            prompt,
+            UserContent::text(prompt),
             message_history,
             tool_registry,
             mcp_manager,
@@ -824,7 +1112,7 @@ impl<'a> AgentExecutor<'a> {
         &self,
         spot_agent: &dyn SpotAgent,
         model_name: &str,
-        prompt: &str,
+        prompt: UserContent,
         message_history: Option<Vec<ModelRequest>>,
         tool_registry: &SpotToolRegistry,
         mcp_manager: &McpManager,
@@ -853,12 +1141,28 @@ impl<'a> AgentExecutor<'a> {
 
         // Prepare data for the spawned task
         let system_prompt = spot_agent.system_prompt();
-        let prompt = prompt.to_string();
         let model_name_owned = model_name.to_string();
         let db_path = self.db.path().to_path_buf();
         let bus = self.bus.clone(); // Clone bus for sub-agent visibility
         let tool_return_recorder = tool_return_recorder.clone();
         let (tx, rx) = mpsc::channel(32);
+
+        // Log what we're sending to serdesAI
+        match &prompt {
+            UserContent::Text(t) => {
+                debug!(text_len = t.len(), "Sending text prompt to serdesAI")
+            }
+            UserContent::Parts(parts) => {
+                let image_count = parts
+                    .iter()
+                    .filter(|p| matches!(p, UserContentPart::Image { .. }))
+                    .count();
+                info!(
+                    parts_count = parts.len(),
+                    image_count, "Sending multimodal prompt to serdesAI"
+                );
+            }
+        }
 
         debug!(tool_count = tool_data.len(), "Spawning streaming task");
 
@@ -958,7 +1262,7 @@ impl<'a> AgentExecutor<'a> {
             };
 
             // Use real streaming from serdesAI
-            debug!(prompt_len = prompt.len(), "Calling run_stream_with_options");
+            debug!("Calling run_stream_with_options");
 
             match serdes_agent
                 .run_stream_with_options(prompt, (), options)

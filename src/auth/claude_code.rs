@@ -10,7 +10,6 @@ use serdes_ai_providers::oauth::{
     OAuthError, TokenResponse,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
 
@@ -247,54 +246,40 @@ fn filter_latest_models(models: Vec<String>) -> Vec<String> {
     filtered
 }
 
-/// Save Claude models to config file
-fn save_claude_models(models: &[String]) -> Result<(), std::io::Error> {
-    let configs: Vec<ModelConfig> = models
-        .iter()
-        .map(|model_name| {
-            // Create prefixed name like "claude-code-claude-sonnet-4-20250514"
-            let prefixed = format!("claude-code-{}", model_name);
+/// Save Claude models to database
+fn save_claude_models_to_db(db: &Database, models: &[String]) -> Result<(), std::io::Error> {
+    use crate::models::ModelRegistry;
 
-            // Determine if it supports thinking (opus and sonnet 4+ do)
-            let supports_thinking = model_name.contains("opus")
-                || (model_name.contains("sonnet")
-                    && (model_name.contains("-4") || model_name.contains("4-")));
+    for model_name in models {
+        // Create prefixed name like "claude-code-claude-sonnet-4-20250514"
+        let prefixed = format!("claude-code-{}", model_name);
 
-            ModelConfig {
-                name: prefixed,
-                model_type: ModelType::ClaudeCode,
-                model_id: Some(model_name.clone()), // The actual API model ID
-                context_length: 200_000,
-                supports_thinking,
-                supports_vision: true,
-                supports_tools: true,
-                description: Some(format!("Claude Code OAuth: {}", model_name)),
-                custom_endpoint: None,
-                azure_deployment: None,
-                azure_api_version: None,
-                round_robin_models: Vec::new(),
-            }
-        })
-        .collect();
+        // Determine if it supports thinking (opus and sonnet 4+ do)
+        let supports_thinking = model_name.contains("opus")
+            || (model_name.contains("sonnet")
+                && (model_name.contains("-4") || model_name.contains("4-")));
 
-    let path = claude_models_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        let config = ModelConfig {
+            name: prefixed,
+            model_type: ModelType::ClaudeCode,
+            model_id: Some(model_name.clone()),
+            context_length: 200_000,
+            supports_thinking,
+            supports_vision: true,
+            supports_tools: true,
+            description: Some(format!("Claude Code OAuth: {}", model_name)),
+            custom_endpoint: None,
+            azure_deployment: None,
+            azure_api_version: None,
+            round_robin_models: Vec::new(),
+        };
+
+        ModelRegistry::add_model_to_db(db, &config)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
     }
 
-    let json = serde_json::to_string_pretty(&configs).map_err(std::io::Error::other)?;
-    std::fs::write(&path, json)?;
-
-    info!("Saved {} Claude Code models to {:?}", configs.len(), path);
+    info!("Saved {} Claude Code models to database", models.len());
     Ok(())
-}
-
-/// Path to Claude models config file
-fn claude_models_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".stockpot")
-        .join("claude_models.json")
 }
 
 /// Run the Claude Code OAuth flow.
@@ -333,7 +318,7 @@ pub async fn run_claude_code_auth(db: &Database) -> Result<(), ClaudeCodeAuthErr
             if filtered.is_empty() {
                 println!("⚠️  No Claude models found. You may need to check your subscription.");
             } else {
-                match save_claude_models(&filtered) {
+                match save_claude_models_to_db(db, &filtered) {
                     Ok(()) => {
                         println!("✅ Saved {} Claude Code models:", filtered.len());
                         for model in &filtered {

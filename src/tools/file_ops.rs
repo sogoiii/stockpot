@@ -108,6 +108,7 @@ pub fn list_files(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn list_files_recursive(
     base: &Path,
     dir: &Path,
