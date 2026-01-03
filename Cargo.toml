@@ -1,6 +1,6 @@
 [package]
 name = "stockpot"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 description = "AI-powered coding assistant with GUI, CLI, and TUI modes"
 license = "MIT"
@@ -88,8 +88,8 @@ terminal_size = "0.4"
 
 # GUI (optional - for stockpot-gui binary)
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", optional = true }
-gpui-component = { path = "/home/jan/sources/gpui-component/crates/ui", optional = true }
-gpui-component-assets = { path = "/home/jan/sources/gpui-component/crates/assets", optional = true }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", optional = true }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", optional = true }
 rfd = { version = "0.14", optional = true }
 unicode-segmentation = { version = "1.11", optional = true }
 
