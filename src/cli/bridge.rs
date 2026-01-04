@@ -323,16 +323,17 @@ impl<'a> Bridge<'a> {
                                     tool_name,
                                     tool_call_id,
                                 }),
-                                StreamEvent::ToolCallDelta { delta } => {
+                                StreamEvent::ToolCallDelta { delta, .. } => {
                                     Some(BridgeOutMessage::ToolCallDelta { delta })
                                 }
-                                StreamEvent::ToolCallComplete { tool_name } => {
+                                StreamEvent::ToolCallComplete { tool_name, .. } => {
                                     Some(BridgeOutMessage::ToolCallComplete { tool_name })
                                 }
                                 StreamEvent::ToolExecuted {
                                     tool_name,
                                     success,
                                     error,
+                                    ..
                                 } => Some(BridgeOutMessage::ToolExecuted {
                                     tool_name,
                                     success,

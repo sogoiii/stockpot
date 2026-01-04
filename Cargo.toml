@@ -1,6 +1,6 @@
 [package]
 name = "stockpot"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 description = "AI-powered coding assistant with GUI, CLI, and TUI modes"
 license = "MIT"
@@ -14,14 +14,14 @@ name = "spot"
 path = "src/main.rs"
 
 [dependencies]
-# SerdesAI - AI agent framework
-serdes-ai = { git = "https://github.com/janfeddersen-wq/serdesAI", features = ["full"] }
-serdes-ai-core = { git = "https://github.com/janfeddersen-wq/serdesAI" }
-serdes-ai-agent = { git = "https://github.com/janfeddersen-wq/serdesAI", features = ["tracing-integration"] }
-serdes-ai-models = { git = "https://github.com/janfeddersen-wq/serdesAI", features = ["full", "chatgpt-oauth", "claude-code-oauth"] }
-serdes-ai-providers = { git = "https://github.com/janfeddersen-wq/serdesAI", features = ["full"] }
-serdes-ai-tools = { git = "https://github.com/janfeddersen-wq/serdesAI" }
-serdes-ai-mcp = { git = "https://github.com/janfeddersen-wq/serdesAI" }
+# SerdesAI - AI agent framework (using local path for development)
+serdes-ai = { path = "../serdesAI/serdes-ai", features = ["full"] }
+serdes-ai-core = { path = "../serdesAI/serdes-ai-core" }
+serdes-ai-agent = { path = "../serdesAI/serdes-ai-agent", features = ["tracing-integration"] }
+serdes-ai-models = { path = "../serdesAI/serdes-ai-models", features = ["full", "chatgpt-oauth", "claude-code-oauth"] }
+serdes-ai-providers = { path = "../serdesAI/serdes-ai-providers", features = ["full"] }
+serdes-ai-tools = { path = "../serdesAI/serdes-ai-tools" }
+serdes-ai-mcp = { path = "../serdesAI/serdes-ai-mcp" }
 
 # Markdown rendering
 streamdown-parser = { git = "https://github.com/fed-stew/streamdown-rs" }
@@ -74,6 +74,9 @@ ignore = "0.4"
 
 # HTTP (for OAuth)
 reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Base64 encoding/decoding (for JWT parsing)
+base64 = "0.22"
 
 
 # Browser

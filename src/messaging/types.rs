@@ -129,6 +129,9 @@ pub enum AgentEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolMessage {
     pub tool_name: String,
+    /// Unique ID for this tool call (for parallel tool tracking)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
     pub status: ToolStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<serde_json::Value>,
@@ -261,6 +264,17 @@ impl Message {
     pub fn tool_started(tool_name: &str) -> Self {
         Self::Tool(ToolMessage {
             tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Started,
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool started message with ID.
+    pub fn tool_started_with_id(tool_name: &str, tool_call_id: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
             status: ToolStatus::Started,
             ..Default::default()
         })
@@ -270,6 +284,22 @@ impl Message {
     pub fn tool_executing(tool_name: &str, args: Option<serde_json::Value>) -> Self {
         Self::Tool(ToolMessage {
             tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Executing,
+            args,
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool executing message with ID.
+    pub fn tool_executing_with_id(
+        tool_name: &str,
+        tool_call_id: &str,
+        args: Option<serde_json::Value>,
+    ) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
             status: ToolStatus::Executing,
             args,
             ..Default::default()
@@ -280,6 +310,17 @@ impl Message {
     pub fn tool_completed(tool_name: &str) -> Self {
         Self::Tool(ToolMessage {
             tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Completed,
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool completed message with ID.
+    pub fn tool_completed_with_id(tool_name: &str, tool_call_id: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
             status: ToolStatus::Completed,
             ..Default::default()
         })
@@ -289,6 +330,18 @@ impl Message {
     pub fn tool_failed(tool_name: &str, error: &str) -> Self {
         Self::Tool(ToolMessage {
             tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Failed,
+            error: Some(error.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool failed message with ID.
+    pub fn tool_failed_with_id(tool_name: &str, tool_call_id: &str, error: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
             status: ToolStatus::Failed,
             error: Some(error.to_string()),
             ..Default::default()

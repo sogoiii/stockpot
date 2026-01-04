@@ -1,6 +1,78 @@
 //! Conversation state management
+//!
+//! Manages chat messages and tool calls for the GUI.
 
-use std::sync::Arc;
+/// Format a tool call as a nice one-liner for display in chat
+pub fn format_tool_call_display(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "list_files" => {
+            let dir = args
+                .get("directory")
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            let recursive = args
+                .get("recursive")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let rec_str = if recursive { " (recursive)" } else { "" };
+            format!("📂 `{}`{}", dir, rec_str)
+        }
+        "read_file" => {
+            let path = args
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("📄 `{}`", path)
+        }
+        "edit_file" => {
+            let path = args
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("✏️ `{}`", path)
+        }
+        "delete_file" => {
+            let path = args
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("🗑️ `{}`", path)
+        }
+        "grep" => {
+            let pattern = args
+                .get("pattern")
+                .or(args.get("search_string"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let dir = args
+                .get("directory")
+                .and_then(|v| v.as_str())
+                .unwrap_or(".");
+            format!("🔍 `{}` in `{}`", pattern, dir)
+        }
+        "run_shell_command" | "agent_run_shell_command" => {
+            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("?");
+            let preview = if cmd.len() > 60 {
+                format!("{}...", &cmd[..57])
+            } else {
+                cmd.to_string()
+            };
+            format!("💻 `{}`", preview)
+        }
+        "invoke_agent" => {
+            let agent = args
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("🤖 → {}", agent)
+        }
+        "agent_share_your_reasoning" => "💭 reasoning...".to_string(),
+        _ => {
+            // For unknown tools, show name with wrench emoji
+            format!("🔧 {}", name)
+        }
+    }
+}
 
 /// Role of a message sender
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,5 +196,26 @@ impl Conversation {
     pub fn clear(&mut self) {
         self.messages.clear();
         self.is_generating = false;
+    }
+
+    /// Append a tool call marker to the current message
+    pub fn append_tool_call(&mut self, name: &str, args: Option<serde_json::Value>) {
+        let args = args.unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+        let display = format_tool_call_display(name, &args);
+        let marker = format!("\n{}\n", display);
+        self.append_to_current(&marker);
+    }
+
+    /// Mark the last tool call as completed with optional result indicator
+    pub fn complete_tool_call(&mut self, _name: &str, success: bool) {
+        let indicator = if success { " ✓" } else { " ✗" };
+        // Find the last line and append indicator
+        if let Some(msg) = self.messages.last_mut() {
+            if msg.content.ends_with('\n') {
+                msg.content.pop();
+            }
+            msg.content.push_str(indicator);
+            msg.content.push('\n');
+        }
     }
 }

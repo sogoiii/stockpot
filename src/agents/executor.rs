@@ -613,6 +613,7 @@ impl<'a> AgentExecutor<'a> {
                             tool_name,
                             success,
                             error,
+                            ..
                         } => Some((tool_name.clone(), *success, error.clone())),
                         _ => None,
                     };
@@ -640,7 +641,7 @@ impl<'a> AgentExecutor<'a> {
                                 args_buffer: String::new(),
                             });
                         }
-                        StreamEvent::ToolCallDelta { delta } => {
+                        StreamEvent::ToolCallDelta { delta, .. } => {
                             if let Some(tc) = in_progress_tool_call.as_mut() {
                                 tc.args_buffer.push_str(delta);
                             }
@@ -908,6 +909,7 @@ impl<'a> AgentExecutor<'a> {
                             tool_name,
                             success,
                             error,
+                            ..
                         } => Some((tool_name.clone(), *success, error.clone())),
                         _ => None,
                     };
@@ -935,7 +937,7 @@ impl<'a> AgentExecutor<'a> {
                                 args_buffer: String::new(),
                             });
                         }
-                        StreamEvent::ToolCallDelta { delta } => {
+                        StreamEvent::ToolCallDelta { delta, .. } => {
                             if let Some(tc) = in_progress_tool_call.as_mut() {
                                 tc.args_buffer.push_str(delta);
                             }

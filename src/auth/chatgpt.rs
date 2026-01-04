@@ -3,6 +3,7 @@
 use super::storage::{StoredTokens, TokenStorage, TokenStorageError};
 use crate::db::Database;
 use crate::models::{ModelConfig, ModelType};
+use base64::Engine;
 use serdes_ai_models::chatgpt_oauth::ChatGptOAuthModel;
 use serdes_ai_providers::oauth::{
     config::chatgpt_oauth_config, refresh_token as oauth_refresh_token, run_pkce_flow, OAuthError,
@@ -12,6 +13,78 @@ use thiserror::Error;
 use tracing::{error, info};
 
 const PROVIDER: &str = "chatgpt";
+
+/// Extract account ID from JWT token claims.
+/// The account ID is in the `https://api.openai.com/auth` claim object
+/// under the `chatgpt_account_id` field.
+fn extract_account_id_from_token(id_token: &str) -> Option<String> {
+    // JWT format: header.payload.signature
+    let parts: Vec<&str> = id_token.split('.').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+
+    // Decode the payload (second part)
+    let payload = parts[1];
+
+    // Use URL-safe base64 decoding (try without padding first, then with)
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| {
+            // Add padding if needed
+            let padded = match payload.len() % 4 {
+                2 => format!("{}==", payload),
+                3 => format!("{}=", payload),
+                _ => payload.to_string(),
+            };
+            base64::engine::general_purpose::URL_SAFE.decode(&padded)
+        })
+        .ok()?;
+
+    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+
+    // The correct claim structure per Python code:
+    // claims["https://api.openai.com/auth"]["chatgpt_account_id"]
+    if let Some(auth) = claims.get("https://api.openai.com/auth") {
+        if let Some(account_id) = auth.get("chatgpt_account_id").and_then(|v| v.as_str()) {
+            if !account_id.is_empty() {
+                tracing::debug!(account_id = %account_id, "Found chatgpt_account_id in JWT");
+                return Some(account_id.to_string());
+            }
+        }
+    }
+
+    // Fallback: Try organizations array like Python does
+    if let Some(auth) = claims.get("https://api.openai.com/auth") {
+        if let Some(organizations) = auth.get("organizations").and_then(|v| v.as_array()) {
+            // Find default org, or use first one
+            let org = organizations
+                .iter()
+                .find(|o| {
+                    o.get("is_default")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                })
+                .or_else(|| organizations.first());
+
+            if let Some(org) = org {
+                if let Some(org_id) = org.get("id").and_then(|v| v.as_str()) {
+                    tracing::debug!(org_id = %org_id, "Found org_id in JWT organizations");
+                    return Some(org_id.to_string());
+                }
+            }
+        }
+    }
+
+    // Last fallback: top-level organization_id
+    if let Some(org_id) = claims.get("organization_id").and_then(|v| v.as_str()) {
+        tracing::debug!(org_id = %org_id, "Found top-level organization_id in JWT");
+        return Some(org_id.to_string());
+    }
+
+    tracing::warn!("Could not find chatgpt_account_id in JWT claims");
+    None
+}
 
 #[derive(Debug, Error)]
 pub enum ChatGptAuthError {
@@ -50,12 +123,22 @@ impl<'a> ChatGptAuth<'a> {
 
     /// Save tokens from OAuth response.
     pub fn save_tokens(&self, tokens: &TokenResponse) -> Result<(), ChatGptAuthError> {
+        // Try to extract account_id from id_token if available
+        let account_id = tokens
+            .id_token
+            .as_ref()
+            .and_then(|id_token| extract_account_id_from_token(id_token));
+
+        if account_id.is_some() {
+            info!("Extracted account_id from OAuth token");
+        }
+
         self.storage.save(
             PROVIDER,
             &tokens.access_token,
             tokens.refresh_token.as_deref(),
             tokens.expires_in,
-            None, // account_id not in standard response
+            account_id.as_deref(),
             None,
         )?;
         Ok(())
@@ -278,7 +361,23 @@ pub async fn get_chatgpt_model(
 ) -> Result<ChatGptOAuthModel, ChatGptAuthError> {
     let auth = ChatGptAuth::new(db);
     let access_token = auth.refresh_if_needed().await?;
-    Ok(ChatGptOAuthModel::new(model_name, access_token))
+
+    // Get account_id from stored tokens
+    let tokens = auth
+        .get_tokens()?
+        .ok_or(ChatGptAuthError::NotAuthenticated)?;
+
+    let mut model = ChatGptOAuthModel::new(model_name, access_token);
+
+    // Add account_id if available (required by Codex API)
+    if let Some(account_id) = tokens.account_id {
+        model = model.with_account_id(account_id);
+    } else {
+        // Log warning - API calls may fail without account_id
+        tracing::warn!("No account_id found for ChatGPT OAuth - API calls may return 403");
+    }
+
+    Ok(model)
 }
 
 #[cfg(test)]

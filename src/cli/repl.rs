@@ -863,11 +863,11 @@ impl<'a> Repl<'a> {
                                     print!("\n\x1b[2m{}\x1b[0m ", tool_name);
                                     let _ = stdout().flush();
                                 }
-                                StreamEvent::ToolCallDelta { delta } => {
+                                StreamEvent::ToolCallDelta { delta, .. } => {
                                     // Accumulate args for later display
                                     tool_args_buffer.push_str(&delta);
                                 }
-                                StreamEvent::ToolCallComplete { tool_name: _ } => {
+                                StreamEvent::ToolCallComplete { .. } => {
                                     // Now show the args in a nice format
                                     if let Some(ref tool) = current_tool {
                                         debug!(tool = %tool, args_buffer = %tool_args_buffer, "ToolCallComplete - parsing args");
@@ -939,11 +939,7 @@ impl<'a> Repl<'a> {
                                     }
                                     let _ = stdout().flush();
                                 }
-                                StreamEvent::ToolExecuted {
-                                    tool_name: _,
-                                    success,
-                                    error,
-                                } => {
+                                StreamEvent::ToolExecuted { success, error, .. } => {
                                     // Just end the line, show error if failed
                                     if success {
                                         println!();

@@ -487,15 +487,19 @@ impl ChatApp {
                     .append_to_current(&format!("\n\n💭 {}\n\n", thinking.text));
             }
             Message::Tool(tool) => {
-                if matches!(tool.status, ToolStatus::Started) {
-                    // Show tool call in conversation
-                    self.conversation
-                        .append_to_current(&format!("\n\n🔧 {}", tool.tool_name));
-                } else if matches!(tool.status, ToolStatus::Completed) {
-                    self.conversation.append_to_current(" ✓\n\n");
-                } else if matches!(tool.status, ToolStatus::Failed) {
-                    self.conversation
-                        .append_to_current(&format!(" ✗ {}\n\n", tool.error.unwrap_or_default()));
+                match tool.status {
+                    ToolStatus::Executing => {
+                        // Show tool call with formatted args in conversation
+                        self.conversation
+                            .append_tool_call(&tool.tool_name, tool.args.clone());
+                    }
+                    ToolStatus::Completed => {
+                        self.conversation.complete_tool_call(&tool.tool_name, true);
+                    }
+                    ToolStatus::Failed => {
+                        self.conversation.complete_tool_call(&tool.tool_name, false);
+                    }
+                    _ => {}
                 }
             }
             Message::Agent(agent) => match agent.event {

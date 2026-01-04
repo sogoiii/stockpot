@@ -6,6 +6,7 @@
 
 use super::{Message, MessageSender};
 use serdes_ai_agent::AgentStreamEvent as StreamEvent;
+use std::collections::HashMap;
 
 /// Converts StreamEvents to Messages and publishes to the message bus.
 ///
@@ -15,8 +16,8 @@ pub struct EventBridge {
     sender: MessageSender,
     agent_name: String,
     agent_display_name: String,
-    /// Track current tool call state
-    current_tool: Option<CurrentToolState>,
+    /// Track multiple in-progress tool calls by tool_call_id (or tool_name as fallback)
+    tool_states: HashMap<String, CurrentToolState>,
     /// Whether we've sent the first text (for agent header)
     first_text_sent: bool,
 }
@@ -24,6 +25,7 @@ pub struct EventBridge {
 /// State for tracking an in-progress tool call.
 struct CurrentToolState {
     name: String,
+    tool_call_id: Option<String>,
     args_buffer: String,
 }
 
@@ -34,7 +36,7 @@ impl EventBridge {
             sender,
             agent_name: agent_name.to_string(),
             agent_display_name: display_name.to_string(),
-            current_tool: None,
+            tool_states: HashMap::new(),
             first_text_sent: false,
         }
     }
@@ -101,42 +103,108 @@ impl EventBridge {
                 tool_name,
                 tool_call_id,
             } => {
-                // Start tracking this tool call
-                self.current_tool = Some(CurrentToolState {
-                    name: tool_name.clone(),
-                    args_buffer: String::new(),
-                });
-                let _ = tool_call_id; // Available if needed
-                let _ = self.sender.send(Message::tool_started(&tool_name));
-            }
+                // Use tool_call_id as key, or generate one from tool_name + count
+                let key = tool_call_id
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_{}", tool_name, self.tool_states.len()));
 
-            StreamEvent::ToolCallDelta { delta } => {
-                // Accumulate args for later parsing
-                if let Some(ref mut tool) = self.current_tool {
-                    tool.args_buffer.push_str(&delta);
+                self.tool_states.insert(
+                    key,
+                    CurrentToolState {
+                        name: tool_name.clone(),
+                        tool_call_id: tool_call_id.clone(),
+                        args_buffer: String::new(),
+                    },
+                );
+
+                if let Some(ref id) = tool_call_id {
+                    let _ = self
+                        .sender
+                        .send(Message::tool_started_with_id(&tool_name, id));
+                } else {
+                    let _ = self.sender.send(Message::tool_started(&tool_name));
                 }
             }
 
-            StreamEvent::ToolCallComplete { tool_name } => {
-                // Parse accumulated args and send executing message
-                let args = self
-                    .current_tool
-                    .as_ref()
-                    .and_then(|t| serde_json::from_str(&t.args_buffer).ok());
+            StreamEvent::ToolCallDelta {
+                delta,
+                tool_call_id,
+            } => {
+                // Accumulate args for the tool with matching tool_call_id, or last started
+                if let Some(ref id) = tool_call_id {
+                    if let Some(state) = self.tool_states.get_mut(id) {
+                        state.args_buffer.push_str(&delta);
+                    }
+                } else if let Some(state) = self.tool_states.values_mut().last() {
+                    state.args_buffer.push_str(&delta);
+                }
+            }
 
-                let _ = self.sender.send(Message::tool_executing(&tool_name, args));
+            StreamEvent::ToolCallComplete {
+                tool_name,
+                tool_call_id,
+            } => {
+                // Use provided tool_call_id, or find by name
+                let resolved_id = tool_call_id.clone().or_else(|| {
+                    self.tool_states
+                        .values()
+                        .find(|s| s.name == tool_name)
+                        .and_then(|s| s.tool_call_id.clone())
+                });
+
+                let args = if let Some(ref id) = resolved_id {
+                    self.tool_states
+                        .get(id)
+                        .and_then(|s| serde_json::from_str(&s.args_buffer).ok())
+                } else {
+                    self.tool_states
+                        .values()
+                        .find(|s| s.name == tool_name)
+                        .and_then(|s| serde_json::from_str(&s.args_buffer).ok())
+                };
+
+                if let Some(ref id) = resolved_id {
+                    let _ = self
+                        .sender
+                        .send(Message::tool_executing_with_id(&tool_name, id, args));
+                } else {
+                    let _ = self.sender.send(Message::tool_executing(&tool_name, args));
+                }
             }
 
             StreamEvent::ToolExecuted {
                 tool_name,
+                tool_call_id,
                 success,
                 error,
             } => {
-                // Clear tool state
-                self.current_tool = None;
+                // Use provided tool_call_id, or find and remove by name
+                let resolved_id = tool_call_id.clone().or_else(|| {
+                    self.tool_states
+                        .iter()
+                        .find(|(_, s)| s.name == tool_name)
+                        .map(|(k, _)| k.clone())
+                });
+
+                // Remove the tool state
+                if let Some(ref key) = resolved_id {
+                    self.tool_states.remove(key);
+                }
 
                 if success {
-                    let _ = self.sender.send(Message::tool_completed(&tool_name));
+                    if let Some(ref id) = resolved_id {
+                        let _ = self
+                            .sender
+                            .send(Message::tool_completed_with_id(&tool_name, id));
+                    } else {
+                        let _ = self.sender.send(Message::tool_completed(&tool_name));
+                    }
+                } else if let Some(ref id) = resolved_id {
+                    let _ = self.sender.send(Message::tool_failed_with_id(
+                        &tool_name,
+                        id,
+                        error.as_deref().unwrap_or("Unknown error"),
+                    ));
                 } else {
                     let _ = self.sender.send(Message::tool_failed(
                         &tool_name,
@@ -166,7 +234,7 @@ impl EventBridge {
 
     /// Reset the bridge state (useful for reuse).
     pub fn reset(&mut self) {
-        self.current_tool = None;
+        self.tool_states.clear();
         self.first_text_sent = false;
     }
 }

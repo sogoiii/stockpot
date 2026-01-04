@@ -574,54 +574,51 @@ impl TerminalRenderer {
     fn render_tool_event(&self, msg: &ToolMessage) -> std::io::Result<()> {
         match msg.status {
             ToolStatus::Started => {
-                // Print tool name in dim
-                println!();
+                // Just print the tool name
                 stdout()
-                    .execute(SetAttribute(Attribute::Dim))?
+                    .execute(SetForegroundColor(Color::Yellow))?
+                    .execute(Print("\n🔧 "))?
                     .execute(Print(&msg.tool_name))?
-                    .execute(SetAttribute(Attribute::Reset))?
-                    .execute(Print(" "))?;
+                    .execute(ResetColor)?;
                 stdout().flush()?;
             }
             ToolStatus::ArgsStreaming => {
-                // Args streaming - could show dots or nothing
+                // Nothing to show during streaming
             }
             ToolStatus::Executing => {
-                // Show parsed args nicely formatted
+                // Show the args after the tool name
                 if let Some(ref args) = msg.args {
+                    stdout().execute(Print(" "))?;
                     self.render_tool_args(&msg.tool_name, args)?;
                 }
                 stdout().flush()?;
             }
             ToolStatus::Completed => {
-                // Just end the line
+                // Print checkmark on same line and newline
+                stdout()
+                    .execute(SetForegroundColor(Color::Green))?
+                    .execute(Print(" ✓"))?
+                    .execute(ResetColor)?;
                 println!();
             }
             ToolStatus::Failed => {
-                // Show error
+                // Print error and newline
                 if let Some(ref err) = msg.error {
-                    // Truncate long errors
                     let display_err = if err.len() > 60 {
                         format!("{}...", &err[..57])
                     } else {
                         err.clone()
                     };
                     stdout()
-                        .execute(Print(" "))?
                         .execute(SetForegroundColor(Color::Red))?
-                        .execute(SetAttribute(Attribute::Bold))?
-                        .execute(Print("✗ "))?
+                        .execute(Print(" ✗ "))?
                         .execute(Print(display_err))?
-                        .execute(ResetColor)?
-                        .execute(SetAttribute(Attribute::Reset))?;
+                        .execute(ResetColor)?;
                 } else {
                     stdout()
-                        .execute(Print(" "))?
                         .execute(SetForegroundColor(Color::Red))?
-                        .execute(SetAttribute(Attribute::Bold))?
-                        .execute(Print("✗ failed"))?
-                        .execute(ResetColor)?
-                        .execute(SetAttribute(Attribute::Reset))?;
+                        .execute(Print(" ✗ failed"))?
+                        .execute(ResetColor)?;
                 }
                 println!();
             }
