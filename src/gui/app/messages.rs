@@ -1,9 +1,14 @@
-use gpui::{div, prelude::*, px, Context, SharedString, StatefulInteractiveElement, Styled};
+use gpui::{
+    div, prelude::*, px, AnyElement, Context, IntoElement, SharedString,
+    StatefulInteractiveElement, Styled,
+};
 use gpui_component::text::markdown;
 
 use super::ChatApp;
-use crate::gui::components::scrollbar;
-use crate::gui::state::MessageRole;
+use crate::gui::components::{
+    collapsible_display, current_spinner_frame, scrollbar, CollapsibleProps,
+};
+use crate::gui::state::{MessageRole, MessageSection};
 
 impl ChatApp {
     pub(super) fn render_messages(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -109,19 +114,20 @@ impl ChatApp {
                                             // User messages: constrained width, Assistant: full width
                                             .when(is_user, |d| d.max_w(px(600.)))
                                             .when(!is_user, |d| d.w_full().min_w_0())
-                                            // Use gpui-component's markdown renderer
-                                            .child(
-                                                div()
-                                                    .w_full()
-                                                    .overflow_x_hidden()
-                                                    .child(markdown(&msg.content).selectable(true)),
-                                            )
+                                            // Render sections if available, otherwise fall back to content
+                                            .children(self.render_message_content(
+                                                &msg.sections,
+                                                &msg.content,
+                                                idx,
+                                                &theme,
+                                                cx,
+                                            ))
                                             .when(is_streaming, |d: gpui::Div| {
                                                 d.child(
                                                     div()
                                                         .ml(px(2.))
                                                         .text_color(theme.accent)
-                                                        .child("▋"),
+                                                        .child(current_spinner_frame()),
                                                 )
                                             }),
                                     )
@@ -134,5 +140,113 @@ impl ChatApp {
                 self.messages_scrollbar_drag.clone(),
                 theme.clone(),
             ))
+    }
+
+    /// Render the content of a message, handling sections or falling back to raw content.
+    ///
+    /// When a message has structured sections, each section is rendered appropriately:
+    /// - Text sections render as markdown
+    /// - NestedAgent sections render as collapsible containers
+    ///
+    /// If no sections exist (legacy messages), the raw content is rendered as markdown.
+    fn render_message_content(
+        &self,
+        sections: &[MessageSection],
+        content: &str,
+        msg_idx: usize,
+        theme: &crate::gui::theme::Theme,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
+        // If we have sections, render them
+        if !sections.is_empty() {
+            sections
+                .iter()
+                .enumerate()
+                .map(|(sec_idx, section)| self.render_section(section, msg_idx, sec_idx, theme, cx))
+                .collect()
+        } else {
+            // Legacy: render content directly as markdown
+            // Clone to owned String for markdown renderer's 'static requirement
+            let owned_content = content.to_string();
+            vec![div()
+                .w_full()
+                .overflow_x_hidden()
+                .child(markdown(&owned_content).selectable(true))
+                .into_any_element()]
+        }
+    }
+
+    /// Render a single message section.
+    fn render_section(
+        &self,
+        section: &MessageSection,
+        msg_idx: usize,
+        sec_idx: usize,
+        theme: &crate::gui::theme::Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        match section {
+            MessageSection::Text(text) => {
+                // Text sections render as markdown
+                div()
+                    .id(SharedString::from(format!(
+                        "msg-{}-sec-{}",
+                        msg_idx, sec_idx
+                    )))
+                    .w_full()
+                    .overflow_x_hidden()
+                    .child(markdown(text).selectable(true))
+                    .into_any_element()
+            }
+            MessageSection::NestedAgent(agent_section) => {
+                // Nested agent sections render as collapsible
+                self.render_agent_section(agent_section, msg_idx, sec_idx, theme, cx)
+            }
+        }
+    }
+
+    /// Render a nested agent section as a collapsible container.
+    fn render_agent_section(
+        &self,
+        agent_section: &crate::gui::state::AgentSection,
+        msg_idx: usize,
+        sec_idx: usize,
+        theme: &crate::gui::theme::Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let section_id_for_click = agent_section.id.clone();
+
+        // Build collapsible props from theme and agent section state
+        let props = CollapsibleProps::with_theme(theme)
+            .id(format!("msg-{}-agent-{}", msg_idx, sec_idx))
+            .title(agent_section.display_name.clone())
+            .icon("🤖")
+            .collapsed(agent_section.is_collapsed)
+            .loading(!agent_section.is_complete);
+
+        // Render the agent content as markdown
+        let content = div()
+            .w_full()
+            .overflow_x_hidden()
+            .child(markdown(&agent_section.content).selectable(true));
+
+        // Create the collapsible in display-only mode (no internal click handler)
+        let collapsible_element = collapsible_display(props, content);
+
+        // Wrap in a clickable container that handles toggle via cx.listener()
+        div()
+            .id(SharedString::from(format!(
+                "msg-{}-sec-{}-container",
+                msg_idx, sec_idx
+            )))
+            .w_full()
+            .my(px(8.)) // Vertical margin for visual separation
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.conversation
+                    .toggle_section_collapsed(&section_id_for_click);
+                cx.notify();
+            }))
+            .child(collapsible_element)
+            .into_any_element()
     }
 }

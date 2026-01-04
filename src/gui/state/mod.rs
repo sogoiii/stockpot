@@ -2,4 +2,6 @@
 
 mod conversation;
 
-pub use conversation::{ChatMessage, Conversation, MessageRole, ToolCallState};
+pub use conversation::{
+    AgentSection, ChatMessage, Conversation, MessageRole, MessageSection, ToolCallState,
+};

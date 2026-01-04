@@ -156,6 +156,13 @@ pub struct ChatApp {
     mcp_import_json: String,
     /// MCP settings: import error message
     mcp_import_error: Option<String>,
+
+    /// Stack of active agent names (main agent at bottom, sub-agents pushed on top)
+    /// Empty means no agent running
+    active_agent_stack: Vec<String>,
+
+    /// Map from agent_name to section_id for currently active nested sections
+    active_section_ids: HashMap<String, String>,
 }
 
 impl ChatApp {
@@ -273,6 +280,9 @@ impl ChatApp {
             show_mcp_import_dialog: false,
             mcp_import_json: String::new(),
             mcp_import_error: None,
+
+            active_agent_stack: Vec::new(),
+            active_section_ids: HashMap::new(),
         };
 
         // Start message listener
@@ -475,7 +485,21 @@ impl ChatApp {
     fn handle_message(&mut self, msg: Message, cx: &mut Context<Self>) {
         match msg {
             Message::TextDelta(delta) => {
-                self.conversation.append_to_current(&delta.text);
+                // Check if this delta is from a nested agent
+                if let Some(agent_name) = &delta.agent_name {
+                    // Route to the nested agent's section
+                    if let Some(section_id) = self.active_section_ids.get(agent_name) {
+                        self.conversation
+                            .append_to_nested_agent(section_id, &delta.text);
+                    } else {
+                        // Fallback: append to main content if section not found
+                        self.conversation.append_to_current(&delta.text);
+                    }
+                } else {
+                    // No agent attribution - append to current (handles main agent)
+                    self.conversation.append_to_current(&delta.text);
+                }
+
                 // Auto-scroll to bottom if user hasn't scrolled away
                 if !self.user_scrolled_away {
                     self.scroll_messages_to_bottom();
@@ -489,41 +513,130 @@ impl ChatApp {
             Message::Tool(tool) => {
                 match tool.status {
                     ToolStatus::Executing => {
-                        // Show tool call with formatted args in conversation
-                        self.conversation
-                            .append_tool_call(&tool.tool_name, tool.args.clone());
+                        // Check if this tool is from a nested agent
+                        if let Some(agent_name) = &tool.agent_name {
+                            if let Some(section_id) = self.active_section_ids.get(agent_name) {
+                                // Route to nested section
+                                self.conversation.append_tool_call_to_section(
+                                    section_id,
+                                    &tool.tool_name,
+                                    tool.args.clone(),
+                                );
+                            } else {
+                                // Fallback to main content
+                                self.conversation
+                                    .append_tool_call(&tool.tool_name, tool.args.clone());
+                            }
+                        } else {
+                            self.conversation
+                                .append_tool_call(&tool.tool_name, tool.args.clone());
+                        }
                     }
                     ToolStatus::Completed => {
-                        self.conversation.complete_tool_call(&tool.tool_name, true);
+                        if let Some(agent_name) = &tool.agent_name {
+                            if let Some(section_id) = self.active_section_ids.get(agent_name) {
+                                self.conversation.complete_tool_call_in_section(
+                                    section_id,
+                                    &tool.tool_name,
+                                    true,
+                                );
+                            } else {
+                                self.conversation.complete_tool_call(&tool.tool_name, true);
+                            }
+                        } else {
+                            self.conversation.complete_tool_call(&tool.tool_name, true);
+                        }
                     }
                     ToolStatus::Failed => {
-                        self.conversation.complete_tool_call(&tool.tool_name, false);
+                        if let Some(agent_name) = &tool.agent_name {
+                            if let Some(section_id) = self.active_section_ids.get(agent_name) {
+                                self.conversation.complete_tool_call_in_section(
+                                    section_id,
+                                    &tool.tool_name,
+                                    false,
+                                );
+                            } else {
+                                self.conversation.complete_tool_call(&tool.tool_name, false);
+                            }
+                        } else {
+                            self.conversation.complete_tool_call(&tool.tool_name, false);
+                        }
                     }
                     _ => {}
                 }
             }
             Message::Agent(agent) => match agent.event {
                 AgentEvent::Started => {
-                    self.conversation.start_assistant_message();
-                    self.is_generating = true;
-                    // Reset scroll state and scroll to bottom for new response
-                    self.user_scrolled_away = false;
-                    self.scroll_messages_to_bottom();
+                    if self.active_agent_stack.is_empty() {
+                        // Main agent starting - existing behavior
+                        self.conversation.start_assistant_message();
+                        self.is_generating = true;
+                        // Reset scroll state and scroll to bottom for new response
+                        self.user_scrolled_away = false;
+                        self.scroll_messages_to_bottom();
+                    } else {
+                        // Sub-agent starting - create collapsible section
+                        if let Some(section_id) = self
+                            .conversation
+                            .start_nested_agent(&agent.agent_name, &agent.display_name)
+                        {
+                            self.active_section_ids
+                                .insert(agent.agent_name.clone(), section_id);
+                        }
+                    }
+                    self.active_agent_stack.push(agent.agent_name.clone());
                 }
                 AgentEvent::Completed { .. } => {
-                    self.conversation.finish_current_message();
-                    self.is_generating = false;
+                    // Pop this agent from stack
+                    if let Some(completed_agent) = self.active_agent_stack.pop() {
+                        if let Some(section_id) = self.active_section_ids.remove(&completed_agent) {
+                            // Finish the nested section
+                            self.conversation.finish_nested_agent(&section_id);
+                            // Auto-collapse completed sub-agent sections
+                            self.conversation.set_section_collapsed(&section_id, true);
+                        }
+                    }
+
+                    // Only finish generating if main agent completed (stack empty)
+                    if self.active_agent_stack.is_empty() {
+                        self.conversation.finish_current_message();
+                        self.is_generating = false;
+                    }
                 }
                 AgentEvent::Error { message } => {
-                    self.conversation
-                        .append_to_current(&format!("\n\n❌ Error: {}", message));
-                    self.conversation.finish_current_message();
-                    self.is_generating = false;
-                    self.error_message = Some(message);
+                    // Pop all agents down to (and including) the errored one
+                    while let Some(agent_name) = self.active_agent_stack.pop() {
+                        if let Some(section_id) = self.active_section_ids.remove(&agent_name) {
+                            self.conversation.append_to_nested_agent(
+                                &section_id,
+                                &format!("\n\n❌ Error: {}", message),
+                            );
+                            self.conversation.finish_nested_agent(&section_id);
+                        }
+                        if agent_name == agent.agent_name {
+                            break; // Found the errored agent, stop unwinding
+                        }
+                    }
+
+                    // If stack is now empty, the main agent errored
+                    if self.active_agent_stack.is_empty() {
+                        self.conversation
+                            .append_to_current(&format!("\n\n❌ Error: {}", message));
+                        self.conversation.finish_current_message();
+                        self.is_generating = false;
+                        self.error_message = Some(message);
+                    }
                 }
             },
             _ => {}
         }
+        cx.notify();
+    }
+
+    /// Toggle a nested agent section's collapsed state
+    #[allow(dead_code)]
+    fn toggle_agent_section(&mut self, section_id: &str, cx: &mut Context<Self>) {
+        self.conversation.toggle_section_collapsed(section_id);
         cx.notify();
     }
 
@@ -1295,6 +1408,8 @@ impl ChatApp {
     ) {
         self.conversation.clear();
         self.message_history.clear();
+        self.active_agent_stack.clear();
+        self.active_section_ids.clear();
         self.input_state.update(cx, |state, cx| {
             state.set_value("", window, cx);
         });

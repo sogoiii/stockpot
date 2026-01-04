@@ -139,6 +139,9 @@ pub struct ToolMessage {
     pub result: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Agent that executed this tool (for nested agent routing)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
 }
 
 /// Tool execution status.
@@ -344,6 +347,120 @@ impl Message {
             tool_call_id: Some(tool_call_id.to_string()),
             status: ToolStatus::Failed,
             error: Some(error.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool started message with agent name.
+    pub fn tool_started_from(tool_name: &str, agent_name: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Started,
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool started message with ID and agent name.
+    pub fn tool_started_with_id_from(
+        tool_name: &str,
+        tool_call_id: &str,
+        agent_name: &str,
+    ) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            status: ToolStatus::Started,
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool executing message with agent name.
+    pub fn tool_executing_from(
+        tool_name: &str,
+        args: Option<serde_json::Value>,
+        agent_name: &str,
+    ) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Executing,
+            args,
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool executing message with ID and agent name.
+    pub fn tool_executing_with_id_from(
+        tool_name: &str,
+        tool_call_id: &str,
+        args: Option<serde_json::Value>,
+        agent_name: &str,
+    ) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            status: ToolStatus::Executing,
+            args,
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool completed message with agent name.
+    pub fn tool_completed_from(tool_name: &str, agent_name: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Completed,
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool completed message with ID and agent name.
+    pub fn tool_completed_with_id_from(
+        tool_name: &str,
+        tool_call_id: &str,
+        agent_name: &str,
+    ) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            status: ToolStatus::Completed,
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool failed message with agent name.
+    pub fn tool_failed_from(tool_name: &str, error: &str, agent_name: &str) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: None,
+            status: ToolStatus::Failed,
+            error: Some(error.to_string()),
+            agent_name: Some(agent_name.to_string()),
+            ..Default::default()
+        })
+    }
+
+    /// Create a tool failed message with ID and agent name.
+    pub fn tool_failed_with_id_from(
+        tool_name: &str,
+        tool_call_id: &str,
+        error: &str,
+        agent_name: &str,
+    ) -> Self {
+        Self::Tool(ToolMessage {
+            tool_name: tool_name.to_string(),
+            tool_call_id: Some(tool_call_id.to_string()),
+            status: ToolStatus::Failed,
+            error: Some(error.to_string()),
+            agent_name: Some(agent_name.to_string()),
             ..Default::default()
         })
     }

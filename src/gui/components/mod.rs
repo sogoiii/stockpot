@@ -2,11 +2,13 @@
 
 mod attachment_preview;
 mod chat_view;
+mod collapsible;
 mod input_field;
 mod markdown_text;
 mod message;
 mod scrollbar;
 mod selectable_text;
+mod spinner;
 // Note: text_input.rs is no longer used - now using gpui_component::input::Input
 // mod text_input;
 mod toolbar;
@@ -26,3 +28,6 @@ pub use selectable_text::{
 pub use toolbar::Toolbar;
 
 pub use attachment_preview::{render_attachment_preview, render_attachments_row};
+pub use spinner::{current_spinner_frame, spinner, Spinner};
+
+pub use collapsible::{collapsible, collapsible_display, CollapsibleProps};

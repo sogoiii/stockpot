@@ -118,11 +118,15 @@ impl EventBridge {
                 );
 
                 if let Some(ref id) = tool_call_id {
+                    let _ = self.sender.send(Message::tool_started_with_id_from(
+                        &tool_name,
+                        id,
+                        &self.agent_name,
+                    ));
+                } else {
                     let _ = self
                         .sender
-                        .send(Message::tool_started_with_id(&tool_name, id));
-                } else {
-                    let _ = self.sender.send(Message::tool_started(&tool_name));
+                        .send(Message::tool_started_from(&tool_name, &self.agent_name));
                 }
             }
 
@@ -164,11 +168,18 @@ impl EventBridge {
                 };
 
                 if let Some(ref id) = resolved_id {
-                    let _ = self
-                        .sender
-                        .send(Message::tool_executing_with_id(&tool_name, id, args));
+                    let _ = self.sender.send(Message::tool_executing_with_id_from(
+                        &tool_name,
+                        id,
+                        args,
+                        &self.agent_name,
+                    ));
                 } else {
-                    let _ = self.sender.send(Message::tool_executing(&tool_name, args));
+                    let _ = self.sender.send(Message::tool_executing_from(
+                        &tool_name,
+                        args,
+                        &self.agent_name,
+                    ));
                 }
             }
 
@@ -193,22 +204,28 @@ impl EventBridge {
 
                 if success {
                     if let Some(ref id) = resolved_id {
+                        let _ = self.sender.send(Message::tool_completed_with_id_from(
+                            &tool_name,
+                            id,
+                            &self.agent_name,
+                        ));
+                    } else {
                         let _ = self
                             .sender
-                            .send(Message::tool_completed_with_id(&tool_name, id));
-                    } else {
-                        let _ = self.sender.send(Message::tool_completed(&tool_name));
+                            .send(Message::tool_completed_from(&tool_name, &self.agent_name));
                     }
                 } else if let Some(ref id) = resolved_id {
-                    let _ = self.sender.send(Message::tool_failed_with_id(
+                    let _ = self.sender.send(Message::tool_failed_with_id_from(
                         &tool_name,
                         id,
                         error.as_deref().unwrap_or("Unknown error"),
+                        &self.agent_name,
                     ));
                 } else {
-                    let _ = self.sender.send(Message::tool_failed(
+                    let _ = self.sender.send(Message::tool_failed_from(
                         &tool_name,
                         error.as_deref().unwrap_or("Unknown error"),
+                        &self.agent_name,
                     ));
                 }
             }
@@ -276,28 +293,44 @@ mod tests {
             tool_call_id: Some("123".to_string()),
         });
         bridge.process(StreamEvent::ToolCallDelta {
+            tool_call_id: Some("123".to_string()),
             delta: r#"{"file_path":"test.rs"}"#.to_string(),
         });
         bridge.process(StreamEvent::ToolCallComplete {
+            tool_call_id: Some("123".to_string()),
             tool_name: "read_file".to_string(),
         });
         bridge.process(StreamEvent::ToolExecuted {
+            tool_call_id: Some("123".to_string()),
             tool_name: "read_file".to_string(),
             success: true,
             error: None,
         });
 
-        // Check messages
+        // Check messages - all should have agent_name
         let msg1 = receiver.recv().await.unwrap();
-        assert!(matches!(msg1, Message::Tool(t) if t.tool_name == "read_file"));
+        if let Message::Tool(t) = msg1 {
+            assert_eq!(t.tool_name, "read_file");
+            assert_eq!(t.agent_name, Some("test-agent".to_string()));
+        } else {
+            panic!("Expected Tool message");
+        }
 
         let msg2 = receiver.recv().await.unwrap();
         if let Message::Tool(t) = msg2 {
             assert!(t.args.is_some());
+            assert_eq!(t.agent_name, Some("test-agent".to_string()));
+        } else {
+            panic!("Expected Tool message");
         }
 
         let msg3 = receiver.recv().await.unwrap();
-        assert!(matches!(msg3, Message::Tool(t) if t.tool_name == "read_file"));
+        if let Message::Tool(t) = msg3 {
+            assert_eq!(t.tool_name, "read_file");
+            assert_eq!(t.agent_name, Some("test-agent".to_string()));
+        } else {
+            panic!("Expected Tool message");
+        }
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ use image::codecs::png::PngDecoder;
 use image::{DynamicImage, Frame, ImageDecoder};
 
 use super::{ChatApp, PendingAttachment, MAX_ATTACHMENTS};
+use crate::gui::components::current_spinner_frame;
 use crate::gui::theme::Theme;
 
 /// Size of the attachment preview container
@@ -68,7 +69,7 @@ impl ChatApp {
                                 }),
                             )
                             .child(if is_generating {
-                                "⏳"
+                                current_spinner_frame()
                             } else if attachment_count > 0 {
                                 "Send 📎→"
                             } else {
