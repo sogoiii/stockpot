@@ -3,17 +3,25 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Your AI-powered coding companion** — A blazing-fast, terminal-native coding assistant built in Rust.
+**Your AI-powered coding companion** — A blazing-fast coding assistant built in Rust with GUI, CLI, and TUI modes.
 
-Stockpot is an open-source alternative to expensive AI coding tools like Cursor and Windsurf. It runs directly in your terminal with support for multiple LLM providers, tool execution, and a delightful developer experience.
+Stockpot is an open-source alternative to expensive AI coding tools like Cursor and Windsurf. It features a beautiful native GUI (default), a powerful terminal REPL, and bridge mode for IDE integration. Supports multiple LLM providers including OAuth authentication for ChatGPT Plus and Claude Code subscriptions.
 
 ## ✨ Features
 
 ### 🤖 Multi-Provider AI Support
-- **OpenAI**: GPT-4o, GPT-4o-mini, O1, O1-mini
-- **Anthropic**: Claude 3.5 Sonnet, Claude 3.5 Haiku, Claude 3 Opus
-- **Google**: Gemini 2.0 Flash, Gemini 1.5 Pro
-- **OAuth Providers**: ChatGPT Plus, Claude Code (VS Code credentials)
+- **OpenAI**: GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4o, O3, O4-mini
+- **Anthropic**: Claude Sonnet 4, Claude Opus 4, Claude 3.5 Haiku
+- **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 2.0 Flash
+- **ChatGPT OAuth**: Use your ChatGPT Plus/Pro subscription directly (no API key needed!)
+- **Claude Code OAuth**: Use your Claude Pro/Max subscription via VS Code credentials
+
+### 🖥️ Native GUI (Default)
+- **Beautiful Interface**: Modern, responsive design built with GPUI
+- **Real-time Streaming**: Watch responses flow in with live markdown rendering
+- **Model & Agent Switching**: Easy dropdowns for quick context switching
+- **Settings Panel**: Configure everything visually
+- **Dark Theme**: Easy on the eyes for long coding sessions
 
 ### 🛠️ Powerful Tools
 - **File Operations**: Read, write, list, grep with smart filtering
@@ -108,17 +116,20 @@ export GOOGLE_API_KEY="..."
 ### Start Stockpot
 
 ```bash
-# Interactive mode
-pup
+# Launch GUI (default)
+spot
 
-# Single prompt
-pup -p "Explain this codebase"
+# Terminal REPL mode
+spot --no-gui
+
+# Single prompt (terminal)
+spot --no-gui -p "Explain this codebase"
 
 # With specific agent
-pup --agent python-reviewer
+spot --agent python-reviewer
 
 # With specific model
-pup --model anthropic:claude-3-5-sonnet
+spot --model anthropic:claude-3-5-sonnet
 ```
 
 ### OAuth Authentication (ChatGPT/Claude Code)
@@ -273,7 +284,7 @@ Custom JSON agents can specify their visibility:
 For external UI integration (VS Code extension, web UI, etc.):
 
 ```bash
-pup --bridge
+spot --bridge
 ```
 
 Communicates via NDJSON over stdio:
