@@ -51,14 +51,14 @@ pub fn format_tokens_with_separator(count: usize) -> String {
     let s = count.to_string();
     let chars: Vec<char> = s.chars().collect();
     let mut result = String::with_capacity(s.len() + s.len() / 3);
-    
+
     for (i, ch) in chars.iter().enumerate() {
-        if i > 0 && (chars.len() - i) % 3 == 0 {
+        if i > 0 && (chars.len() - i).is_multiple_of(3) {
             result.push(' ');
         }
         result.push(*ch);
     }
-    
+
     result
 }
 
@@ -98,14 +98,14 @@ mod tests {
         assert_eq!(format_tokens_with_separator(123), "123");
         assert_eq!(format_tokens_with_separator(500), "500");
         assert_eq!(format_tokens_with_separator(999), "999");
-        
+
         // Thousands
         assert_eq!(format_tokens_with_separator(1000), "1 000");
         assert_eq!(format_tokens_with_separator(1231), "1 231");
         assert_eq!(format_tokens_with_separator(1500), "1 500");
         assert_eq!(format_tokens_with_separator(12345), "12 345");
         assert_eq!(format_tokens_with_separator(128000), "128 000");
-        
+
         // Millions
         assert_eq!(format_tokens_with_separator(200000), "200 000");
         assert_eq!(format_tokens_with_separator(1000000), "1 000 000");

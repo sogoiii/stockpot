@@ -1608,16 +1608,17 @@ impl ChatApp {
         // Get context window size from current model
         let (effective_model, _) = self.current_effective_model();
         let model = self.model_registry.get(&effective_model);
-        self.context_window_size = model
-            .map(|m| m.context_length)
-            .unwrap_or(128_000);
+        self.context_window_size = model.map(|m| m.context_length).unwrap_or(128_000);
 
         // Estimate tokens - during streaming use conversation content (includes in-progress response),
         // otherwise use message_history for accurate count
         if self.is_generating {
             // During streaming, estimate from conversation content
             // ~4 chars per token approximation
-            let conv_chars: usize = self.conversation.messages.iter()
+            let conv_chars: usize = self
+                .conversation
+                .messages
+                .iter()
                 .map(|m| m.content.len())
                 .sum();
             self.context_tokens_used = conv_chars / 4;
@@ -1625,7 +1626,10 @@ impl ChatApp {
             self.context_tokens_used = crate::tokens::estimate_tokens(&self.message_history);
         } else {
             // Fallback for empty history
-            let conv_chars: usize = self.conversation.messages.iter()
+            let conv_chars: usize = self
+                .conversation
+                .messages
+                .iter()
                 .map(|m| m.content.len())
                 .sum();
             self.context_tokens_used = conv_chars / 4;
@@ -1664,7 +1668,8 @@ impl ChatApp {
 
         // Add to history every 250ms for chart display
         if self.last_history_sample.elapsed() > std::time::Duration::from_millis(250) {
-            self.throughput_history.push_back(self.current_throughput_cps);
+            self.throughput_history
+                .push_back(self.current_throughput_cps);
             // Keep only last 8 samples
             while self.throughput_history.len() > 8 {
                 self.throughput_history.pop_front();

@@ -196,17 +196,19 @@ impl ChatApp {
                                     .bg(self.theme.tool_card)
                                     .tooltip(move |_window, cx| {
                                         cx.new(|_| {
-                                            super::super::components::SimpleTooltip::new(
-                                                format!("~{} / {} tokens", context_tokens_used, context_window_size)
-                                            )
-                                        }).into()
+                                            super::super::components::SimpleTooltip::new(format!(
+                                                "~{} / {} tokens",
+                                                context_tokens_used, context_window_size
+                                            ))
+                                        })
+                                        .into()
                                     })
                                     // Label
                                     .child(
                                         div()
                                             .text_size(px(11.))
                                             .text_color(self.theme.text_muted)
-                                            .child("Context:")
+                                            .child("Context:"),
                                     )
                                     // Progress bar container
                                     .child(
@@ -222,20 +224,17 @@ impl ChatApp {
                                                     .h_full()
                                                     .w(gpui::relative(usage_percent as f32 / 100.0))
                                                     .bg(progress_color)
-                                                    .rounded(px(2.))
-                                            )
+                                                    .rounded(px(2.)),
+                                            ),
                                     )
                                     // Token count text
-                                    .child(
-                                        div()
-                                            .text_size(px(11.))
-                                            .text_color(label_color)
-                                            .child(format!(
-                                                "{}/{}",
-                                                format_tokens_with_separator(context_tokens_used),
-                                                format_tokens_with_separator(context_window_size)
-                                            ))
-                                    )
+                                    .child(div().text_size(px(11.)).text_color(label_color).child(
+                                        format!(
+                                            "{}/{}",
+                                            format_tokens_with_separator(context_tokens_used),
+                                            format_tokens_with_separator(context_window_size)
+                                        ),
+                                    )),
                             )
                             // Throughput chart
                             .child(
@@ -251,14 +250,17 @@ impl ChatApp {
                                             "Idle".to_string()
                                         };
                                         cx.new(|_| {
-                                            super::super::components::SimpleTooltip::new(cps_display)
-                                        }).into()
+                                            super::super::components::SimpleTooltip::new(
+                                                cps_display,
+                                            )
+                                        })
+                                        .into()
                                     })
                                     .child(
                                         div()
                                             .text_size(px(11.))
                                             .text_color(theme_text_muted)
-                                            .child("Speed:")
+                                            .child("Speed:"),
                                     )
                                     .child(throughput_chart(ThroughputChartProps {
                                         samples: throughput_history,
@@ -268,7 +270,7 @@ impl ChatApp {
                                         bar_color: theme_accent,
                                         bar_color_fast: theme_success,
                                         background_color: theme_border,
-                                    }))
+                                    })),
                             ),
                     )
                     .child(
@@ -277,7 +279,6 @@ impl ChatApp {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-
                             // New conversation
                             .child(
                                 div()

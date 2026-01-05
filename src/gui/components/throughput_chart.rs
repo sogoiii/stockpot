@@ -25,8 +25,8 @@ impl Default for ThroughputChartProps {
             current_cps: 0.0,
             is_active: false,
             max_cps: 2000.0,
-            bar_color: gpui::rgb(0x55aacc),      // Cyan-ish
-            bar_color_fast: gpui::rgb(0x66cc66), // Green
+            bar_color: gpui::rgb(0x55aacc),        // Cyan-ish
+            bar_color_fast: gpui::rgb(0x66cc66),   // Green
             background_color: gpui::rgb(0x333333), // Dark gray
         }
     }
@@ -49,7 +49,7 @@ pub fn throughput_chart(props: ThroughputChartProps) -> impl IntoElement {
         .into_iter()
         .map(|cps| {
             // Normalize to 0.0-1.0 range
-            let normalized = (cps / props.max_cps).min(1.0).max(0.0);
+            let normalized = (cps / props.max_cps).clamp(0.0, 1.0);
             let height = (normalized as f32 * chart_height).max(1.0); // Min 1px when > 0
 
             // Color based on speed (green = fast, cyan = normal)
@@ -61,8 +61,12 @@ pub fn throughput_chart(props: ThroughputChartProps) -> impl IntoElement {
 
             div()
                 .w(px(bar_width))
-                .h(px(height as f32))
-                .bg(if cps > 0.0 { color } else { props.background_color })
+                .h(px(height))
+                .bg(if cps > 0.0 {
+                    color
+                } else {
+                    props.background_color
+                })
                 .rounded(px(1.))
         })
         .collect();

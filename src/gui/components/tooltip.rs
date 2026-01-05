@@ -13,16 +13,20 @@ impl SimpleTooltip {
     }
 
     /// Create a tooltip builder function for use with .tooltip()
-    pub fn text(text: impl Into<String> + Clone + 'static) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView {
+    pub fn text(
+        text: impl Into<String> + Clone + 'static,
+    ) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyView {
         let text = text.into();
-        move |_window, cx| {
-            cx.new(|_| SimpleTooltip::new(text.clone())).into()
-        }
+        move |_window, cx| cx.new(|_| SimpleTooltip::new(text.clone())).into()
     }
 }
 
 impl Render for SimpleTooltip {
-    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut gpui::Context<Self>,
+    ) -> impl IntoElement {
         div()
             .px(px(8.))
             .py(px(4.))
