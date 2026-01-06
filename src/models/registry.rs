@@ -341,11 +341,255 @@ impl ModelRegistry {
 mod tests {
     use super::*;
 
+    fn create_test_model(name: &str) -> ModelConfig {
+        ModelConfig {
+            name: name.to_string(),
+            model_type: ModelType::Openai,
+            model_id: Some(format!("{}-id", name)),
+            context_length: 8192,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_tools: true,
+            description: Some(format!("Test model {}", name)),
+            custom_endpoint: None,
+            azure_deployment: None,
+            azure_api_version: None,
+            round_robin_models: Vec::new(),
+        }
+    }
+
+    // =========================================================================
+    // Basic Registry Tests
+    // =========================================================================
+
     #[test]
     fn test_registry_starts_empty() {
         let registry = ModelRegistry::new();
         assert!(registry.is_empty());
-        // Models are now added explicitly via /add_model or OAuth
-        // The catalog provides available models, database stores configured ones
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_registry_default_is_empty() {
+        let registry = ModelRegistry::default();
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_registry_new_equals_default() {
+        let new_reg = ModelRegistry::new();
+        let default_reg = ModelRegistry::default();
+        assert_eq!(new_reg.len(), default_reg.len());
+    }
+
+    // =========================================================================
+    // Add/Get/Contains Tests
+    // =========================================================================
+
+    #[test]
+    fn test_add_and_get() {
+        let mut registry = ModelRegistry::new();
+        let model = create_test_model("gpt-4");
+        registry.add(model);
+
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get("gpt-4").is_some());
+        assert_eq!(registry.get("gpt-4").unwrap().name, "gpt-4");
+    }
+
+    #[test]
+    fn test_get_nonexistent() {
+        let registry = ModelRegistry::new();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_contains() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("gpt-4"));
+
+        assert!(registry.contains("gpt-4"));
+        assert!(!registry.contains("claude"));
+    }
+
+    #[test]
+    fn test_add_overwrites_existing() {
+        let mut registry = ModelRegistry::new();
+        let model1 = create_test_model("gpt-4");
+        let mut model2 = create_test_model("gpt-4");
+        model2.context_length = 16384;
+
+        registry.add(model1);
+        registry.add(model2);
+
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.get("gpt-4").unwrap().context_length, 16384);
+    }
+
+    // =========================================================================
+    // List/Names Tests
+    // =========================================================================
+
+    #[test]
+    fn test_names_iterator() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("model-a"));
+        registry.add(create_test_model("model-b"));
+
+        let names: Vec<&str> = registry.names().collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"model-a"));
+        assert!(names.contains(&"model-b"));
+    }
+
+    #[test]
+    fn test_list_is_sorted() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("zebra"));
+        registry.add(create_test_model("alpha"));
+        registry.add(create_test_model("middle"));
+
+        let list = registry.list();
+        assert_eq!(list, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn test_all_iterator() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("model-1"));
+        registry.add(create_test_model("model-2"));
+
+        let all: Vec<&ModelConfig> = registry.all().collect();
+        assert_eq!(all.len(), 2);
+    }
+
+    // =========================================================================
+    // Edge Cases
+    // =========================================================================
+
+    #[test]
+    fn test_empty_model_name() {
+        let mut registry = ModelRegistry::new();
+        let mut model = create_test_model("");
+        model.name = String::new();
+        registry.add(model);
+
+        assert!(registry.contains(""));
+        assert!(registry.get("").is_some());
+    }
+
+    #[test]
+    fn test_unicode_model_name() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("模型-日本語"));
+
+        assert!(registry.contains("模型-日本語"));
+    }
+
+    #[test]
+    fn test_model_name_with_special_chars() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("openai:gpt-4"));
+        registry.add(create_test_model("provider/model"));
+
+        assert!(registry.contains("openai:gpt-4"));
+        assert!(registry.contains("provider/model"));
+    }
+
+    #[test]
+    fn test_many_models() {
+        let mut registry = ModelRegistry::new();
+        for i in 0..100 {
+            registry.add(create_test_model(&format!("model-{}", i)));
+        }
+
+        assert_eq!(registry.len(), 100);
+        assert!(registry.contains("model-0"));
+        assert!(registry.contains("model-99"));
+    }
+
+    // =========================================================================
+    // Model Type Tests
+    // =========================================================================
+
+    #[test]
+    fn test_different_model_types() {
+        let mut registry = ModelRegistry::new();
+
+        let mut openai = create_test_model("openai-model");
+        openai.model_type = ModelType::Openai;
+
+        let mut anthropic = create_test_model("anthropic-model");
+        anthropic.model_type = ModelType::Anthropic;
+
+        let mut gemini = create_test_model("gemini-model");
+        gemini.model_type = ModelType::Gemini;
+
+        registry.add(openai);
+        registry.add(anthropic);
+        registry.add(gemini);
+
+        assert_eq!(registry.len(), 3);
+        assert_eq!(
+            registry.get("openai-model").unwrap().model_type,
+            ModelType::Openai
+        );
+        assert_eq!(
+            registry.get("anthropic-model").unwrap().model_type,
+            ModelType::Anthropic
+        );
+        assert_eq!(
+            registry.get("gemini-model").unwrap().model_type,
+            ModelType::Gemini
+        );
+    }
+
+    // =========================================================================
+    // Custom Endpoint Tests
+    // =========================================================================
+
+    #[test]
+    fn test_model_with_custom_endpoint() {
+        let mut registry = ModelRegistry::new();
+        let mut model = create_test_model("custom-model");
+        model.model_type = ModelType::CustomOpenai;
+        model.custom_endpoint = Some(CustomEndpoint {
+            url: "https://custom.api.com/v1".to_string(),
+            api_key: Some("$CUSTOM_API_KEY".to_string()),
+            headers: HashMap::new(),
+        });
+
+        registry.add(model);
+
+        let retrieved = registry.get("custom-model").unwrap();
+        assert!(retrieved.custom_endpoint.is_some());
+        assert_eq!(
+            retrieved.custom_endpoint.as_ref().unwrap().url,
+            "https://custom.api.com/v1"
+        );
+    }
+
+    // =========================================================================
+    // Config Dir Test
+    // =========================================================================
+
+    #[test]
+    fn test_config_dir_returns_path() {
+        let result = ModelRegistry::config_dir();
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.ends_with(".stockpot"));
+    }
+
+    // =========================================================================
+    // Debug Trait Test
+    // =========================================================================
+
+    #[test]
+    fn test_registry_debug() {
+        let registry = ModelRegistry::new();
+        let debug_str = format!("{:?}", registry);
+        assert!(debug_str.contains("ModelRegistry"));
     }
 }

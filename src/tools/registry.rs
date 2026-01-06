@@ -127,12 +127,30 @@ impl SpotToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serdes_ai_tools::RunContext;
+
+    // =========================================================================
+    // SpotToolRegistry Tests
+    // =========================================================================
 
     #[test]
     fn test_registry_creation() {
         let registry = SpotToolRegistry::new();
         assert_eq!(registry.all_tools().len(), 9);
         assert_eq!(registry.definitions().len(), 9);
+    }
+
+    #[test]
+    fn test_registry_default() {
+        let registry = SpotToolRegistry::default();
+        assert_eq!(registry.all_tools().len(), 9);
+    }
+
+    #[test]
+    fn test_registry_new_equals_default() {
+        let new_reg = SpotToolRegistry::new();
+        let default_reg = SpotToolRegistry::default();
+        assert_eq!(new_reg.all_tools().len(), default_reg.all_tools().len());
     }
 
     #[test]
@@ -143,10 +161,56 @@ mod tests {
     }
 
     #[test]
+    fn test_tools_by_name_all_tools() {
+        let registry = SpotToolRegistry::new();
+        let all_names = [
+            "list_files",
+            "read_file",
+            "edit_file",
+            "delete_file",
+            "grep",
+            "run_shell_command",
+            "share_your_reasoning",
+            "invoke_agent",
+            "list_agents",
+        ];
+        let tools = registry.tools_by_name(&all_names);
+        assert_eq!(tools.len(), 9);
+    }
+
+    #[test]
+    fn test_tools_by_name_unknown() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["nonexistent_tool"]);
+        assert_eq!(tools.len(), 0);
+    }
+
+    #[test]
+    fn test_tools_by_name_mixed() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["read_file", "nonexistent", "grep"]);
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn test_tools_by_name_empty() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&[]);
+        assert_eq!(tools.len(), 0);
+    }
+
+    #[test]
+    fn test_tools_by_name_case_sensitive() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["READ_FILE", "Edit_File"]);
+        assert_eq!(tools.len(), 0);
+    }
+
+    #[test]
     fn test_read_only_tools() {
         let registry = SpotToolRegistry::new();
         let tools = registry.read_only_tools();
-        // Should not include edit_file, delete_file, run_shell_command
+        assert_eq!(tools.len(), 4);
         for tool in &tools {
             let name = tool.definition().name;
             assert!(
@@ -154,10 +218,16 @@ mod tests {
                     || name == "read_file"
                     || name == "grep"
                     || name == "share_your_reasoning",
-                "Unexpected tool in read_only: {}",
-                name
+                "Unexpected tool in read_only: {name}"
             );
         }
+    }
+
+    #[test]
+    fn test_file_tools() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.file_tools();
+        assert_eq!(tools.len(), 5);
     }
 
     #[test]
@@ -168,5 +238,210 @@ mod tests {
             assert!(!def.name.is_empty(), "Tool name is empty");
             assert!(!def.description.is_empty(), "Tool description is empty");
         }
+    }
+
+    #[test]
+    fn test_all_tools_unique_names() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.all_tools();
+        let mut names: Vec<String> = tools
+            .iter()
+            .map(|t| t.definition().name.to_string())
+            .collect();
+        let original_len = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), original_len, "Tool names should be unique");
+    }
+
+    #[test]
+    fn test_definitions_match_all_tools() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.definitions().len(), registry.all_tools().len());
+    }
+
+    #[test]
+    fn test_read_only_tools_are_subset_of_all() {
+        let registry = SpotToolRegistry::new();
+        let all_names: Vec<String> = registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.to_string())
+            .collect();
+        for tool in registry.read_only_tools() {
+            let name = tool.definition().name.to_string();
+            assert!(all_names.contains(&name), "{name} not in all_tools");
+        }
+    }
+
+    #[test]
+    fn test_file_tools_are_subset_of_all() {
+        let registry = SpotToolRegistry::new();
+        let all_names: Vec<String> = registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.to_string())
+            .collect();
+        for tool in registry.file_tools() {
+            let name = tool.definition().name.to_string();
+            assert!(all_names.contains(&name), "{name} not in all_tools");
+        }
+    }
+
+    #[test]
+    fn test_registry_tools_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SpotToolRegistry>();
+    }
+
+    // =========================================================================
+    // Tool Execution Tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_list_files_tool() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["list_files"]);
+        assert_eq!(tools.len(), 1);
+
+        let ctx = RunContext::minimal("test");
+        let result = tools[0]
+            .call(&ctx, serde_json::json!({"directory": "."}))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_read_file_not_found() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["read_file"]);
+
+        let ctx = RunContext::minimal("test");
+        let result = tools[0]
+            .call(&ctx, serde_json::json!({"file_path": "/nonexistent/file.txt"}))
+            .await;
+        assert!(result.is_ok());
+        let ret = result.unwrap();
+        assert!(ret.as_text().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_read_file_with_temp_file() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        let file_path = dir.path().join("test.txt");
+        std::fs::write(&file_path, "hello world").expect("write failed");
+
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["read_file"]);
+
+        let ctx = RunContext::minimal("test");
+        let result = tools[0]
+            .call(&ctx, serde_json::json!({"file_path": file_path.to_str().unwrap()}))
+            .await;
+        assert!(result.is_ok());
+        let text = result.unwrap().as_text().unwrap().to_string();
+        assert!(text.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_edit_file_creates_file() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        let file_path = dir.path().join("new_file.txt");
+
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["edit_file"]);
+
+        let ctx = RunContext::minimal("test");
+        let result = tools[0]
+            .call(
+                &ctx,
+                serde_json::json!({
+                    "file_path": file_path.to_str().unwrap(),
+                    "content": "new content"
+                }),
+            )
+            .await;
+        assert!(result.is_ok());
+        assert!(file_path.exists());
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "new content");
+    }
+
+    #[tokio::test]
+    async fn test_delete_file_removes_file() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        let file_path = dir.path().join("to_delete.txt");
+        std::fs::write(&file_path, "delete me").expect("write failed");
+
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["delete_file"]);
+
+        let ctx = RunContext::minimal("test");
+        let result = tools[0]
+            .call(&ctx, serde_json::json!({"file_path": file_path.to_str().unwrap()}))
+            .await;
+        assert!(result.is_ok());
+        assert!(!file_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_grep_finds_pattern() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        std::fs::write(dir.path().join("test.txt"), "hello world\nfoo bar").expect("write failed");
+
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["grep"]);
+
+        let ctx = RunContext::minimal("test");
+        let result = tools[0]
+            .call(
+                &ctx,
+                serde_json::json!({
+                    "pattern": "hello",
+                    "directory": dir.path().to_str().unwrap()
+                }),
+            )
+            .await;
+        assert!(result.is_ok());
+        let text = result.unwrap().as_text().unwrap().to_string();
+        assert!(text.contains("hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_command_echo() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["run_shell_command"]);
+
+        let ctx = RunContext::minimal("test");
+        let result = tools[0]
+            .call(&ctx, serde_json::json!({"command": "echo hello"}))
+            .await;
+        assert!(result.is_ok());
+        let text = result.unwrap().as_text().unwrap().to_string();
+        assert!(text.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_tools_parallel() {
+        let registry = SpotToolRegistry::new();
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        std::fs::write(dir.path().join("a.txt"), "content a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "content b").unwrap();
+
+        let read_tools = registry.tools_by_name(&["read_file"]);
+        let ctx = RunContext::minimal("test");
+
+        let (res_a, res_b) = tokio::join!(
+            read_tools[0].call(
+                &ctx,
+                serde_json::json!({"file_path": dir.path().join("a.txt").to_str().unwrap()})
+            ),
+            read_tools[0].call(
+                &ctx,
+                serde_json::json!({"file_path": dir.path().join("b.txt").to_str().unwrap()})
+            )
+        );
+
+        assert!(res_a.is_ok());
+        assert!(res_b.is_ok());
     }
 }

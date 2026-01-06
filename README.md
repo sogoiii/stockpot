@@ -117,7 +117,7 @@ export GOOGLE_API_KEY="..."
 
 ```bash
 # Launch GUI (default)
-spot
+spotgi
 
 # Terminal REPL mode
 spot --no-gui

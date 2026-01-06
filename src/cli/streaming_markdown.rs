@@ -46,6 +46,16 @@ impl StreamingMarkdownRenderer {
         }
     }
 
+    /// Get the current terminal width.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Get the current buffer contents (for testing).
+    pub fn buffer(&self) -> &str {
+        &self.line_buffer
+    }
+
     /// Process incoming text delta.
     ///
     /// Buffers text until complete lines are available, then parses
@@ -121,15 +131,76 @@ impl StreamingMarkdownRenderer {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // Constructor Tests
+    // =========================================================================
+
     #[test]
     fn test_new_renderer() {
         let renderer = StreamingMarkdownRenderer::new();
         assert!(renderer.line_buffer.is_empty());
+        assert!(renderer.width > 0); // Should have some reasonable default
     }
 
     #[test]
     fn test_with_width() {
         let renderer = StreamingMarkdownRenderer::with_width(120);
         assert_eq!(renderer.width, 120);
+        assert!(renderer.line_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_with_width_small() {
+        let renderer = StreamingMarkdownRenderer::with_width(40);
+        assert_eq!(renderer.width, 40);
+    }
+
+    #[test]
+    fn test_with_width_large() {
+        let renderer = StreamingMarkdownRenderer::with_width(200);
+        assert_eq!(renderer.width, 200);
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let renderer = StreamingMarkdownRenderer::default();
+        assert!(renderer.line_buffer.is_empty());
+    }
+
+    // =========================================================================
+    // Accessor Tests
+    // =========================================================================
+
+    #[test]
+    fn test_width_accessor() {
+        let renderer = StreamingMarkdownRenderer::with_width(100);
+        assert_eq!(renderer.width(), 100);
+    }
+
+    #[test]
+    fn test_buffer_accessor_empty() {
+        let renderer = StreamingMarkdownRenderer::new();
+        assert_eq!(renderer.buffer(), "");
+    }
+
+    // =========================================================================
+    // Reset Tests
+    // =========================================================================
+
+    #[test]
+    fn test_reset_clears_buffer() {
+        let mut renderer = StreamingMarkdownRenderer::new();
+        renderer.line_buffer = "some content".to_string();
+        renderer.reset();
+        assert!(renderer.line_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_reset_idempotent() {
+        let mut renderer = StreamingMarkdownRenderer::new();
+        renderer.reset();
+        renderer.reset();
+        renderer.reset();
+        assert!(renderer.line_buffer.is_empty());
     }
 }
