@@ -668,4 +668,32 @@ mod tests {
         let read_result = result.unwrap();
         assert_eq!(read_result.estimated_tokens, 25); // 100 / 4
     }
+
+    // =========================================================================
+    // Additional list_files Edge Cases (from PR)
+    // =========================================================================
+
+    #[test]
+    fn test_list_files_tracks_depth_correctly() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
+        fs::create_dir(dir.path().join("sub")).expect("mkdir failed");
+        fs::write(dir.path().join("root.txt"), "root").expect("write failed");
+        fs::write(dir.path().join("sub").join("child.txt"), "child").expect("write failed");
+
+        let result = list_files(dir.path().to_str().unwrap(), true, None, None).unwrap();
+
+        let root_entry = result
+            .entries
+            .iter()
+            .find(|e| e.name == "root.txt")
+            .unwrap();
+        let child_entry = result
+            .entries
+            .iter()
+            .find(|e| e.name == "child.txt")
+            .unwrap();
+
+        assert_eq!(root_entry.depth, 0);
+        assert_eq!(child_entry.depth, 1);
+    }
 }

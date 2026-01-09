@@ -52,7 +52,7 @@ pub struct FileMessage {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum FileOperation {
     Read,
@@ -76,7 +76,7 @@ pub struct DiffLine {
     pub line_number: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum DiffLineType {
     Context,
@@ -100,7 +100,7 @@ pub struct InputRequest {
     pub options: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum InputType {
     Text,
@@ -145,7 +145,7 @@ pub struct ToolMessage {
 }
 
 /// Tool execution status.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolStatus {
     #[default]
@@ -486,5 +486,797 @@ impl Message {
         Self::Thinking(ThinkingMessage {
             text: text.to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // MessageLevel Tests
+    // =========================================================================
+
+    #[test]
+    fn test_message_level_serde() {
+        let levels = [
+            (MessageLevel::Info, "\"info\""),
+            (MessageLevel::Success, "\"success\""),
+            (MessageLevel::Warning, "\"warning\""),
+            (MessageLevel::Error, "\"error\""),
+            (MessageLevel::Debug, "\"debug\""),
+        ];
+
+        for (level, expected) in levels {
+            let json = serde_json::to_string(&level).unwrap();
+            assert_eq!(json, expected);
+
+            let parsed: MessageLevel = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, level);
+        }
+    }
+
+    // =========================================================================
+    // FileOperation Tests
+    // =========================================================================
+
+    #[test]
+    fn test_file_operation_serde() {
+        let ops = [
+            (FileOperation::Read, "\"read\""),
+            (FileOperation::Write, "\"write\""),
+            (FileOperation::List, "\"list\""),
+            (FileOperation::Grep, "\"grep\""),
+            (FileOperation::Delete, "\"delete\""),
+        ];
+
+        for (op, expected) in ops {
+            let json = serde_json::to_string(&op).unwrap();
+            assert_eq!(json, expected);
+
+            let parsed: FileOperation = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, op);
+        }
+    }
+
+    // =========================================================================
+    // DiffLineType Tests
+    // =========================================================================
+
+    #[test]
+    fn test_diff_line_type_serde() {
+        let types = [
+            (DiffLineType::Context, "\"context\""),
+            (DiffLineType::Added, "\"added\""),
+            (DiffLineType::Removed, "\"removed\""),
+            (DiffLineType::Header, "\"header\""),
+        ];
+
+        for (lt, expected) in types {
+            let json = serde_json::to_string(&lt).unwrap();
+            assert_eq!(json, expected);
+
+            let parsed: DiffLineType = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, lt);
+        }
+    }
+
+    // =========================================================================
+    // InputType Tests
+    // =========================================================================
+
+    #[test]
+    fn test_input_type_serde() {
+        let types = [
+            (InputType::Text, "\"text\""),
+            (InputType::Confirmation, "\"confirmation\""),
+            (InputType::Selection, "\"selection\""),
+        ];
+
+        for (it, expected) in types {
+            let json = serde_json::to_string(&it).unwrap();
+            assert_eq!(json, expected);
+
+            let parsed: InputType = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, it);
+        }
+    }
+
+    // =========================================================================
+    // ToolStatus Tests
+    // =========================================================================
+
+    #[test]
+    fn test_tool_status_serde() {
+        let statuses = [
+            (ToolStatus::Started, "\"started\""),
+            (ToolStatus::ArgsStreaming, "\"args_streaming\""),
+            (ToolStatus::Executing, "\"executing\""),
+            (ToolStatus::Completed, "\"completed\""),
+            (ToolStatus::Failed, "\"failed\""),
+        ];
+
+        for (status, expected) in statuses {
+            let json = serde_json::to_string(&status).unwrap();
+            assert_eq!(json, expected);
+
+            let parsed: ToolStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, status);
+        }
+    }
+
+    #[test]
+    fn test_tool_status_default() {
+        let status = ToolStatus::default();
+        assert_eq!(status, ToolStatus::Started);
+    }
+
+    // =========================================================================
+    // AgentEvent Tests
+    // =========================================================================
+
+    #[test]
+    fn test_agent_event_started_serde() {
+        let event = AgentEvent::Started;
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("started"));
+
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        matches!(parsed, AgentEvent::Started);
+    }
+
+    #[test]
+    fn test_agent_event_completed_serde() {
+        let event = AgentEvent::Completed {
+            run_id: "run-123".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("completed"));
+        assert!(json.contains("run-123"));
+
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        if let AgentEvent::Completed { run_id } = parsed {
+            assert_eq!(run_id, "run-123");
+        } else {
+            panic!("Expected Completed variant");
+        }
+    }
+
+    #[test]
+    fn test_agent_event_error_serde() {
+        let event = AgentEvent::Error {
+            message: "Something went wrong".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("error"));
+        assert!(json.contains("Something went wrong"));
+
+        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        if let AgentEvent::Error { message } = parsed {
+            assert_eq!(message, "Something went wrong");
+        } else {
+            panic!("Expected Error variant");
+        }
+    }
+
+    // =========================================================================
+    // Message Factory Tests
+    // =========================================================================
+
+    #[test]
+    fn test_message_info() {
+        let msg = Message::info("test info");
+        if let Message::Text(text_msg) = msg {
+            assert_eq!(text_msg.level, MessageLevel::Info);
+            assert_eq!(text_msg.text, "test info");
+        } else {
+            panic!("Expected Text variant");
+        }
+    }
+
+    #[test]
+    fn test_message_success() {
+        let msg = Message::success("operation succeeded");
+        if let Message::Text(text_msg) = msg {
+            assert_eq!(text_msg.level, MessageLevel::Success);
+            assert_eq!(text_msg.text, "operation succeeded");
+        } else {
+            panic!("Expected Text variant");
+        }
+    }
+
+    #[test]
+    fn test_message_warning() {
+        let msg = Message::warning("be careful");
+        if let Message::Text(text_msg) = msg {
+            assert_eq!(text_msg.level, MessageLevel::Warning);
+            assert_eq!(text_msg.text, "be careful");
+        } else {
+            panic!("Expected Text variant");
+        }
+    }
+
+    #[test]
+    fn test_message_error() {
+        let msg = Message::error("something failed");
+        if let Message::Text(text_msg) = msg {
+            assert_eq!(text_msg.level, MessageLevel::Error);
+            assert_eq!(text_msg.text, "something failed");
+        } else {
+            panic!("Expected Text variant");
+        }
+    }
+
+    #[test]
+    fn test_message_response() {
+        let msg = Message::response("# Hello\n\nWorld");
+        if let Message::Response(resp) = msg {
+            assert_eq!(resp.content, "# Hello\n\nWorld");
+            assert!(!resp.is_streaming);
+        } else {
+            panic!("Expected Response variant");
+        }
+    }
+
+    #[test]
+    fn test_message_agent_started() {
+        let msg = Message::agent_started("stockpot", "Stockpot");
+        if let Message::Agent(agent_msg) = msg {
+            assert_eq!(agent_msg.agent_name, "stockpot");
+            assert_eq!(agent_msg.display_name, "Stockpot");
+            matches!(agent_msg.event, AgentEvent::Started);
+        } else {
+            panic!("Expected Agent variant");
+        }
+    }
+
+    #[test]
+    fn test_message_agent_completed() {
+        let msg = Message::agent_completed("stockpot", "Stockpot", "run-abc");
+        if let Message::Agent(agent_msg) = msg {
+            assert_eq!(agent_msg.agent_name, "stockpot");
+            assert_eq!(agent_msg.display_name, "Stockpot");
+            if let AgentEvent::Completed { run_id } = agent_msg.event {
+                assert_eq!(run_id, "run-abc");
+            } else {
+                panic!("Expected Completed event");
+            }
+        } else {
+            panic!("Expected Agent variant");
+        }
+    }
+
+    #[test]
+    fn test_message_agent_error() {
+        let msg = Message::agent_error("stockpot", "Stockpot", "failed to run");
+        if let Message::Agent(agent_msg) = msg {
+            assert_eq!(agent_msg.agent_name, "stockpot");
+            if let AgentEvent::Error { message } = agent_msg.event {
+                assert_eq!(message, "failed to run");
+            } else {
+                panic!("Expected Error event");
+            }
+        } else {
+            panic!("Expected Agent variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_started() {
+        let msg = Message::tool_started("read_file");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_name, "read_file");
+            assert!(tool_msg.tool_call_id.is_none());
+            assert_eq!(tool_msg.status, ToolStatus::Started);
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_started_with_id() {
+        let msg = Message::tool_started_with_id("read_file", "call-123");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_name, "read_file");
+            assert_eq!(tool_msg.tool_call_id, Some("call-123".to_string()));
+            assert_eq!(tool_msg.status, ToolStatus::Started);
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_executing() {
+        let args = serde_json::json!({"file_path": "/test.txt"});
+        let msg = Message::tool_executing("read_file", Some(args.clone()));
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_name, "read_file");
+            assert_eq!(tool_msg.status, ToolStatus::Executing);
+            assert_eq!(tool_msg.args, Some(args));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_executing_with_id() {
+        let args = serde_json::json!({"file_path": "/test.txt"});
+        let msg = Message::tool_executing_with_id("read_file", "call-456", Some(args.clone()));
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_call_id, Some("call-456".to_string()));
+            assert_eq!(tool_msg.status, ToolStatus::Executing);
+            assert_eq!(tool_msg.args, Some(args));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_completed() {
+        let msg = Message::tool_completed("read_file");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_name, "read_file");
+            assert_eq!(tool_msg.status, ToolStatus::Completed);
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_completed_with_id() {
+        let msg = Message::tool_completed_with_id("read_file", "call-789");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_call_id, Some("call-789".to_string()));
+            assert_eq!(tool_msg.status, ToolStatus::Completed);
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_failed() {
+        let msg = Message::tool_failed("read_file", "file not found");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_name, "read_file");
+            assert_eq!(tool_msg.status, ToolStatus::Failed);
+            assert_eq!(tool_msg.error, Some("file not found".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_failed_with_id() {
+        let msg = Message::tool_failed_with_id("read_file", "call-err", "permission denied");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_call_id, Some("call-err".to_string()));
+            assert_eq!(tool_msg.status, ToolStatus::Failed);
+            assert_eq!(tool_msg.error, Some("permission denied".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    // =========================================================================
+    // Tool Messages from Agent Tests
+    // =========================================================================
+
+    #[test]
+    fn test_message_tool_started_from() {
+        let msg = Message::tool_started_from("grep", "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_name, "grep");
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+            assert_eq!(tool_msg.status, ToolStatus::Started);
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_started_with_id_from() {
+        let msg = Message::tool_started_with_id_from("grep", "call-x", "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_call_id, Some("call-x".to_string()));
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_executing_from() {
+        let args = serde_json::json!({"pattern": "TODO"});
+        let msg = Message::tool_executing_from("grep", Some(args.clone()), "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.status, ToolStatus::Executing);
+            assert_eq!(tool_msg.args, Some(args));
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_executing_with_id_from() {
+        let args = serde_json::json!({"pattern": "FIXME"});
+        let msg =
+            Message::tool_executing_with_id_from("grep", "call-y", Some(args.clone()), "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_call_id, Some("call-y".to_string()));
+            assert_eq!(tool_msg.args, Some(args));
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_completed_from() {
+        let msg = Message::tool_completed_from("grep", "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.status, ToolStatus::Completed);
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_completed_with_id_from() {
+        let msg = Message::tool_completed_with_id_from("grep", "call-z", "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_call_id, Some("call-z".to_string()));
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_failed_from() {
+        let msg = Message::tool_failed_from("grep", "regex error", "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.status, ToolStatus::Failed);
+            assert_eq!(tool_msg.error, Some("regex error".to_string()));
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    #[test]
+    fn test_message_tool_failed_with_id_from() {
+        let msg = Message::tool_failed_with_id_from("grep", "call-f", "timeout", "explorer");
+        if let Message::Tool(tool_msg) = msg {
+            assert_eq!(tool_msg.tool_call_id, Some("call-f".to_string()));
+            assert_eq!(tool_msg.error, Some("timeout".to_string()));
+            assert_eq!(tool_msg.agent_name, Some("explorer".to_string()));
+        } else {
+            panic!("Expected Tool variant");
+        }
+    }
+
+    // =========================================================================
+    // Text Delta and Thinking Tests
+    // =========================================================================
+
+    #[test]
+    fn test_message_text_delta() {
+        let msg = Message::text_delta("Hello ");
+        if let Message::TextDelta(delta) = msg {
+            assert_eq!(delta.text, "Hello ");
+            assert!(delta.agent_name.is_none());
+        } else {
+            panic!("Expected TextDelta variant");
+        }
+    }
+
+    #[test]
+    fn test_message_text_delta_from() {
+        let msg = Message::text_delta_from("streaming...", "planner");
+        if let Message::TextDelta(delta) = msg {
+            assert_eq!(delta.text, "streaming...");
+            assert_eq!(delta.agent_name, Some("planner".to_string()));
+        } else {
+            panic!("Expected TextDelta variant");
+        }
+    }
+
+    #[test]
+    fn test_message_thinking() {
+        let msg = Message::thinking("considering options...");
+        if let Message::Thinking(thinking) = msg {
+            assert_eq!(thinking.text, "considering options...");
+        } else {
+            panic!("Expected Thinking variant");
+        }
+    }
+
+    // =========================================================================
+    // Message Struct Tests
+    // =========================================================================
+
+    #[test]
+    fn test_text_message_serde() {
+        let msg = TextMessage {
+            level: MessageLevel::Info,
+            text: "Hello world".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: TextMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.level, MessageLevel::Info);
+        assert_eq!(parsed.text, "Hello world");
+    }
+
+    #[test]
+    fn test_reasoning_message_serde() {
+        let msg = ReasoningMessage {
+            reasoning: "I need to analyze this".to_string(),
+            next_steps: Some("First, read the file".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ReasoningMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.reasoning, "I need to analyze this");
+        assert_eq!(parsed.next_steps, Some("First, read the file".to_string()));
+    }
+
+    #[test]
+    fn test_reasoning_message_no_steps() {
+        let msg = ReasoningMessage {
+            reasoning: "Thinking...".to_string(),
+            next_steps: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ReasoningMessage = serde_json::from_str(&json).unwrap();
+        assert!(parsed.next_steps.is_none());
+    }
+
+    #[test]
+    fn test_response_message_serde() {
+        let msg = ResponseMessage {
+            content: "# Title\n\nBody text".to_string(),
+            is_streaming: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ResponseMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.content, "# Title\n\nBody text");
+        assert!(parsed.is_streaming);
+    }
+
+    #[test]
+    fn test_shell_message_serde() {
+        let msg = ShellMessage {
+            command: "ls -la".to_string(),
+            output: Some("total 0\nfile.txt".to_string()),
+            exit_code: Some(0),
+            is_running: false,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ShellMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.command, "ls -la");
+        assert_eq!(parsed.exit_code, Some(0));
+        assert!(!parsed.is_running);
+    }
+
+    #[test]
+    fn test_shell_message_running() {
+        let msg = ShellMessage {
+            command: "sleep 10".to_string(),
+            output: None,
+            exit_code: None,
+            is_running: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ShellMessage = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_running);
+        assert!(parsed.output.is_none());
+        assert!(parsed.exit_code.is_none());
+    }
+
+    #[test]
+    fn test_file_message_serde() {
+        let msg = FileMessage {
+            operation: FileOperation::Read,
+            path: "/tmp/test.txt".to_string(),
+            content: Some("file contents".to_string()),
+            error: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: FileMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.operation, FileOperation::Read);
+        assert_eq!(parsed.path, "/tmp/test.txt");
+        assert!(parsed.content.is_some());
+        assert!(parsed.error.is_none());
+    }
+
+    #[test]
+    fn test_file_message_with_error() {
+        let msg = FileMessage {
+            operation: FileOperation::Write,
+            path: "/protected/file.txt".to_string(),
+            content: None,
+            error: Some("Permission denied".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: FileMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.operation, FileOperation::Write);
+        assert_eq!(parsed.error, Some("Permission denied".to_string()));
+    }
+
+    #[test]
+    fn test_diff_message_serde() {
+        let msg = DiffMessage {
+            path: "src/main.rs".to_string(),
+            lines: vec![
+                DiffLine {
+                    content: "@@ -1,3 +1,4 @@".to_string(),
+                    line_type: DiffLineType::Header,
+                    line_number: None,
+                },
+                DiffLine {
+                    content: " fn main() {".to_string(),
+                    line_type: DiffLineType::Context,
+                    line_number: Some(1),
+                },
+                DiffLine {
+                    content: "-    println!(\"old\");".to_string(),
+                    line_type: DiffLineType::Removed,
+                    line_number: Some(2),
+                },
+                DiffLine {
+                    content: "+    println!(\"new\");".to_string(),
+                    line_type: DiffLineType::Added,
+                    line_number: Some(2),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: DiffMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.path, "src/main.rs");
+        assert_eq!(parsed.lines.len(), 4);
+        assert_eq!(parsed.lines[0].line_type, DiffLineType::Header);
+        assert_eq!(parsed.lines[2].line_type, DiffLineType::Removed);
+    }
+
+    #[test]
+    fn test_spinner_message_serde() {
+        let msg = SpinnerMessage {
+            text: "Loading...".to_string(),
+            is_active: true,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: SpinnerMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.text, "Loading...");
+        assert!(parsed.is_active);
+    }
+
+    #[test]
+    fn test_input_request_serde() {
+        let msg = InputRequest {
+            prompt: "Enter your name:".to_string(),
+            request_type: InputType::Text,
+            options: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: InputRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.prompt, "Enter your name:");
+        assert_eq!(parsed.request_type, InputType::Text);
+    }
+
+    #[test]
+    fn test_input_request_with_options() {
+        let msg = InputRequest {
+            prompt: "Choose an option:".to_string(),
+            request_type: InputType::Selection,
+            options: Some(vec!["Option A".to_string(), "Option B".to_string()]),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: InputRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.request_type, InputType::Selection);
+        assert_eq!(parsed.options.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_agent_message_serde() {
+        let msg = AgentMessage {
+            agent_name: "stockpot".to_string(),
+            display_name: "Stockpot".to_string(),
+            event: AgentEvent::Started,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: AgentMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.agent_name, "stockpot");
+        assert_eq!(parsed.display_name, "Stockpot");
+    }
+
+    #[test]
+    fn test_tool_message_serde() {
+        let msg = ToolMessage {
+            tool_name: "read_file".to_string(),
+            tool_call_id: Some("call-123".to_string()),
+            status: ToolStatus::Completed,
+            args: Some(serde_json::json!({"file_path": "/test.txt"})),
+            result: Some("file contents".to_string()),
+            error: None,
+            agent_name: Some("explorer".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ToolMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.tool_name, "read_file");
+        assert_eq!(parsed.tool_call_id, Some("call-123".to_string()));
+        assert_eq!(parsed.status, ToolStatus::Completed);
+        assert!(parsed.result.is_some());
+    }
+
+    #[test]
+    fn test_tool_message_default() {
+        let msg = ToolMessage::default();
+        assert!(msg.tool_name.is_empty());
+        assert!(msg.tool_call_id.is_none());
+        assert_eq!(msg.status, ToolStatus::Started);
+        assert!(msg.args.is_none());
+        assert!(msg.result.is_none());
+        assert!(msg.error.is_none());
+        assert!(msg.agent_name.is_none());
+    }
+
+    #[test]
+    fn test_text_delta_message_serde() {
+        let msg = TextDeltaMessage {
+            text: "Hello ".to_string(),
+            agent_name: None,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: TextDeltaMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.text, "Hello ");
+        assert!(parsed.agent_name.is_none());
+    }
+
+    #[test]
+    fn test_thinking_message_serde() {
+        let msg = ThinkingMessage {
+            text: "Analyzing the problem...".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ThinkingMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.text, "Analyzing the problem...");
+    }
+
+    // =========================================================================
+    // Full Message Enum Tests
+    // =========================================================================
+
+    #[test]
+    fn test_message_enum_text_serde() {
+        let msg = Message::Text(TextMessage {
+            level: MessageLevel::Info,
+            text: "test".to_string(),
+        });
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"text\""));
+
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        matches!(parsed, Message::Text(_));
+    }
+
+    #[test]
+    fn test_message_enum_divider_serde() {
+        let msg = Message::Divider;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"divider\""));
+
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        matches!(parsed, Message::Divider);
+    }
+
+    #[test]
+    fn test_message_enum_clear_serde() {
+        let msg = Message::Clear;
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"clear\""));
+
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        matches!(parsed, Message::Clear);
     }
 }

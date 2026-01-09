@@ -253,4 +253,92 @@ mod tests {
         assert!(result.stdout_truncated);
         assert!(!result.stderr_truncated);
     }
+
+    // =========================================================================
+    // Additional CommandRunner Tests (from PR)
+    // =========================================================================
+
+    #[test]
+    fn test_command_runner_new() {
+        let runner = CommandRunner::new();
+        assert!(runner.working_dir.is_none());
+        assert!(runner.timeout_secs.is_none());
+        assert!(runner.env.is_empty());
+    }
+
+    #[test]
+    fn test_command_runner_default() {
+        let runner = CommandRunner::default();
+        assert!(runner.working_dir.is_none());
+        assert!(runner.timeout_secs.is_none());
+        assert!(runner.env.is_empty());
+    }
+
+    #[test]
+    fn test_command_runner_builder_chain() {
+        let runner = CommandRunner::new()
+            .working_dir("/tmp")
+            .timeout(30)
+            .env("KEY", "value");
+
+        assert_eq!(runner.working_dir, Some("/tmp".to_string()));
+        assert_eq!(runner.timeout_secs, Some(30));
+        assert_eq!(runner.env.len(), 1);
+        assert_eq!(runner.env[0], ("KEY".to_string(), "value".to_string()));
+    }
+
+    #[test]
+    fn test_run_simple_command() {
+        let result = CommandRunner::new().run("echo hello").unwrap();
+        assert!(result.success);
+        assert!(result.stdout.contains("hello"));
+        assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn test_run_command_convenience_fn() {
+        let result = run_command("echo convenience").unwrap();
+        assert!(result.success);
+        assert!(result.stdout.contains("convenience"));
+    }
+
+    #[test]
+    fn test_shell_error_display() {
+        let io_err = ShellError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "test"));
+        assert!(io_err.to_string().contains("IO error"));
+
+        let not_found = ShellError::NotFound("cmd".to_string());
+        assert!(not_found.to_string().contains("Command not found"));
+
+        let exit_code = ShellError::ExitCode(42);
+        assert!(exit_code.to_string().contains("42"));
+
+        let timeout = ShellError::Timeout(60);
+        assert!(timeout.to_string().contains("60"));
+    }
+
+    #[test]
+    fn test_empty_command() {
+        // Empty command should still execute (shell handles it)
+        let result = CommandRunner::new().run("");
+        // Empty command typically succeeds with no output
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_command_result_clone() {
+        let result = CommandResult {
+            stdout: "output".to_string(),
+            stderr: "error".to_string(),
+            exit_code: 42,
+            success: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        };
+        let cloned = result.clone();
+        assert_eq!(result.stdout, cloned.stdout);
+        assert_eq!(result.stderr, cloned.stderr);
+        assert_eq!(result.exit_code, cloned.exit_code);
+        assert_eq!(result.success, cloned.success);
+    }
 }

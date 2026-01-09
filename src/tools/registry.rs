@@ -127,6 +127,11 @@ impl SpotToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    // =========================================================================
+    // Registry Creation Tests
+    // =========================================================================
 
     #[test]
     fn test_registry_creation() {
@@ -136,11 +141,260 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_default_trait() {
+        let registry = SpotToolRegistry::default();
+        assert_eq!(registry.all_tools().len(), 9);
+    }
+
+    #[test]
+    fn test_registry_new_equals_default() {
+        let new_registry = SpotToolRegistry::new();
+        let default_registry = SpotToolRegistry::default();
+
+        let new_names: HashSet<_> = new_registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+        let default_names: HashSet<_> = default_registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        assert_eq!(new_names, default_names);
+    }
+
+    // =========================================================================
+    // all_tools Tests
+    // =========================================================================
+
+    #[test]
+    fn test_all_tools_returns_correct_count() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.all_tools().len(), 9);
+    }
+
+    #[test]
+    fn test_all_tools_contains_expected_tools() {
+        let registry = SpotToolRegistry::new();
+        let tool_names: HashSet<_> = registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let expected = [
+            "list_files",
+            "read_file",
+            "edit_file",
+            "delete_file",
+            "grep",
+            "run_shell_command",
+            "share_your_reasoning",
+            "invoke_agent",
+            "list_agents",
+        ];
+
+        for name in expected {
+            assert!(tool_names.contains(name), "Missing tool: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_all_tools_no_duplicates() {
+        let registry = SpotToolRegistry::new();
+        let tool_names: Vec<_> = registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let unique_names: HashSet<_> = tool_names.iter().collect();
+        assert_eq!(
+            tool_names.len(),
+            unique_names.len(),
+            "Duplicate tools found"
+        );
+    }
+
+    #[test]
+    fn test_all_tools_returns_arc_wrapped() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.all_tools();
+
+        // Each tool should be independently usable via Arc
+        for tool in &tools {
+            let _def = tool.definition(); // Should work through Arc
+            assert!(!tool.definition().name.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_all_tools_can_be_called_multiple_times() {
+        let registry = SpotToolRegistry::new();
+
+        let tools1 = registry.all_tools();
+        let tools2 = registry.all_tools();
+
+        assert_eq!(tools1.len(), tools2.len());
+
+        let names1: HashSet<_> = tools1.iter().map(|t| t.definition().name.clone()).collect();
+        let names2: HashSet<_> = tools2.iter().map(|t| t.definition().name.clone()).collect();
+        assert_eq!(names1, names2);
+    }
+
+    // =========================================================================
+    // definitions Tests
+    // =========================================================================
+
+    #[test]
+    fn test_definitions_returns_correct_count() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.definitions().len(), 9);
+    }
+
+    #[test]
+    fn test_definitions_match_all_tools() {
+        let registry = SpotToolRegistry::new();
+
+        let tool_names: HashSet<_> = registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let def_names: HashSet<_> = registry
+            .definitions()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+
+        assert_eq!(tool_names, def_names);
+    }
+
+    #[test]
+    fn test_definitions_have_valid_structure() {
+        let registry = SpotToolRegistry::new();
+
+        for def in registry.definitions() {
+            assert!(!def.name.is_empty(), "Definition name is empty");
+            assert!(
+                !def.description.is_empty(),
+                "Definition description is empty"
+            );
+            // Parameters should be a valid JSON object
+            assert!(
+                def.parameters().is_object(),
+                "Parameters should be an object"
+            );
+        }
+    }
+
+    // =========================================================================
+    // tools_by_name Tests
+    // =========================================================================
+
+    #[test]
     fn test_tools_by_name() {
         let registry = SpotToolRegistry::new();
         let tools = registry.tools_by_name(&["read_file", "edit_file"]);
         assert_eq!(tools.len(), 2);
     }
+
+    #[test]
+    fn test_tools_by_name_single_tool() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["grep"]);
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].definition().name, "grep");
+    }
+
+    #[test]
+    fn test_tools_by_name_all_tools() {
+        let registry = SpotToolRegistry::new();
+        let names = [
+            "list_files",
+            "read_file",
+            "edit_file",
+            "delete_file",
+            "grep",
+            "run_shell_command",
+            "share_your_reasoning",
+            "invoke_agent",
+            "list_agents",
+        ];
+
+        let tools = registry.tools_by_name(&names);
+        assert_eq!(tools.len(), 9);
+    }
+
+    #[test]
+    fn test_tools_by_name_empty_list() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&[]);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_tools_by_name_unknown_tool() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["nonexistent_tool"]);
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_tools_by_name_mixed_valid_invalid() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["read_file", "nonexistent", "grep"]);
+
+        assert_eq!(tools.len(), 2);
+
+        let names: HashSet<_> = tools.iter().map(|t| t.definition().name.clone()).collect();
+        assert!(names.contains("read_file"));
+        assert!(names.contains("grep"));
+    }
+
+    #[test]
+    fn test_tools_by_name_preserves_order() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["grep", "read_file", "list_files"]);
+
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].definition().name, "grep");
+        assert_eq!(tools[1].definition().name, "read_file");
+        assert_eq!(tools[2].definition().name, "list_files");
+    }
+
+    #[test]
+    fn test_tools_by_name_duplicate_names() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.tools_by_name(&["read_file", "read_file", "read_file"]);
+
+        // Each occurrence should add a tool
+        assert_eq!(tools.len(), 3);
+        for tool in &tools {
+            assert_eq!(tool.definition().name, "read_file");
+        }
+    }
+
+    #[test]
+    fn test_tools_by_name_case_sensitive() {
+        let registry = SpotToolRegistry::new();
+
+        let tools_lower = registry.tools_by_name(&["read_file"]);
+        let tools_upper = registry.tools_by_name(&["READ_FILE"]);
+        let tools_mixed = registry.tools_by_name(&["Read_File"]);
+
+        assert_eq!(tools_lower.len(), 1);
+        assert!(tools_upper.is_empty());
+        assert!(tools_mixed.is_empty());
+    }
+
+    // =========================================================================
+    // read_only_tools Tests
+    // =========================================================================
 
     #[test]
     fn test_read_only_tools() {
@@ -161,12 +415,340 @@ mod tests {
     }
 
     #[test]
+    fn test_read_only_tools_count() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.read_only_tools();
+        assert_eq!(tools.len(), 4);
+    }
+
+    #[test]
+    fn test_read_only_tools_exact_set() {
+        let registry = SpotToolRegistry::new();
+        let tool_names: HashSet<_> = registry
+            .read_only_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let expected: HashSet<_> = [
+            "list_files".to_string(),
+            "read_file".to_string(),
+            "grep".to_string(),
+            "share_your_reasoning".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(tool_names, expected);
+    }
+
+    #[test]
+    fn test_read_only_tools_excludes_dangerous() {
+        let registry = SpotToolRegistry::new();
+        let tool_names: HashSet<_> = registry
+            .read_only_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        assert!(!tool_names.contains("edit_file"));
+        assert!(!tool_names.contains("delete_file"));
+        assert!(!tool_names.contains("run_shell_command"));
+        assert!(!tool_names.contains("invoke_agent"));
+        assert!(!tool_names.contains("list_agents"));
+    }
+
+    // =========================================================================
+    // file_tools Tests
+    // =========================================================================
+
+    #[test]
+    fn test_file_tools_count() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.file_tools();
+        assert_eq!(tools.len(), 5);
+    }
+
+    #[test]
+    fn test_file_tools_exact_set() {
+        let registry = SpotToolRegistry::new();
+        let tool_names: HashSet<_> = registry
+            .file_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let expected: HashSet<_> = [
+            "list_files".to_string(),
+            "read_file".to_string(),
+            "edit_file".to_string(),
+            "delete_file".to_string(),
+            "grep".to_string(),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(tool_names, expected);
+    }
+
+    #[test]
+    fn test_file_tools_excludes_non_file_tools() {
+        let registry = SpotToolRegistry::new();
+        let tool_names: HashSet<_> = registry
+            .file_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        assert!(!tool_names.contains("run_shell_command"));
+        assert!(!tool_names.contains("share_your_reasoning"));
+        assert!(!tool_names.contains("invoke_agent"));
+        assert!(!tool_names.contains("list_agents"));
+    }
+
+    // =========================================================================
+    // Tool Definition Validation Tests
+    // =========================================================================
+
+    #[test]
     fn test_tool_definitions_have_required_fields() {
         let registry = SpotToolRegistry::new();
         for tool in registry.all_tools() {
             let def = tool.definition();
             assert!(!def.name.is_empty(), "Tool name is empty");
             assert!(!def.description.is_empty(), "Tool description is empty");
+        }
+    }
+
+    #[test]
+    fn test_tool_names_are_snake_case() {
+        let registry = SpotToolRegistry::new();
+        for tool in registry.all_tools() {
+            let name = tool.definition().name;
+            assert!(
+                name.chars().all(|c| c.is_lowercase() || c == '_'),
+                "Tool name '{}' is not snake_case",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_tool_descriptions_are_meaningful() {
+        let registry = SpotToolRegistry::new();
+        for tool in registry.all_tools() {
+            let def = tool.definition();
+            // Description should be at least 10 characters
+            assert!(
+                def.description.len() >= 10,
+                "Tool '{}' has too short description: '{}'",
+                def.name,
+                def.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_tool_parameters_are_objects() {
+        let registry = SpotToolRegistry::new();
+        for tool in registry.all_tools() {
+            let def = tool.definition();
+            let params = def.parameters();
+            assert!(
+                params.is_object(),
+                "Tool '{}' parameters should be an object",
+                def.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_tool_parameters_have_type_object() {
+        let registry = SpotToolRegistry::new();
+        for tool in registry.all_tools() {
+            let def = tool.definition();
+            let params = def.parameters();
+            let obj = params.as_object().unwrap();
+
+            if let Some(type_val) = obj.get("type") {
+                assert_eq!(
+                    type_val.as_str(),
+                    Some("object"),
+                    "Tool '{}' parameters type should be 'object'",
+                    def.name
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // Specific Tool Verification Tests
+    // =========================================================================
+
+    #[test]
+    fn test_list_files_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.list_files.definition().name, "list_files");
+    }
+
+    #[test]
+    fn test_read_file_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.read_file.definition().name, "read_file");
+    }
+
+    #[test]
+    fn test_edit_file_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.edit_file.definition().name, "edit_file");
+    }
+
+    #[test]
+    fn test_delete_file_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.delete_file.definition().name, "delete_file");
+    }
+
+    #[test]
+    fn test_grep_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.grep.definition().name, "grep");
+    }
+
+    #[test]
+    fn test_run_shell_command_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(
+            registry.run_shell_command.definition().name,
+            "run_shell_command"
+        );
+    }
+
+    #[test]
+    fn test_share_reasoning_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(
+            registry.share_reasoning.definition().name,
+            "share_your_reasoning"
+        );
+    }
+
+    #[test]
+    fn test_invoke_agent_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.invoke_agent.definition().name, "invoke_agent");
+    }
+
+    #[test]
+    fn test_list_agents_tool_exists() {
+        let registry = SpotToolRegistry::new();
+        assert_eq!(registry.list_agents.definition().name, "list_agents");
+    }
+
+    // =========================================================================
+    // Tool Subset Relationship Tests
+    // =========================================================================
+
+    #[test]
+    fn test_read_only_is_subset_of_all() {
+        let registry = SpotToolRegistry::new();
+
+        let all_names: HashSet<_> = registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let read_only_names: HashSet<_> = registry
+            .read_only_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        assert!(read_only_names.is_subset(&all_names));
+    }
+
+    #[test]
+    fn test_file_tools_is_subset_of_all() {
+        let registry = SpotToolRegistry::new();
+
+        let all_names: HashSet<_> = registry
+            .all_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let file_names: HashSet<_> = registry
+            .file_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        assert!(file_names.is_subset(&all_names));
+    }
+
+    #[test]
+    fn test_read_only_and_file_tools_overlap() {
+        let registry = SpotToolRegistry::new();
+
+        let read_only_names: HashSet<_> = registry
+            .read_only_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let file_names: HashSet<_> = registry
+            .file_tools()
+            .iter()
+            .map(|t| t.definition().name.clone())
+            .collect();
+
+        let intersection: HashSet<_> = read_only_names.intersection(&file_names).collect();
+
+        // list_files, read_file, grep should be in both
+        assert!(intersection.contains(&"list_files".to_string()));
+        assert!(intersection.contains(&"read_file".to_string()));
+        assert!(intersection.contains(&"grep".to_string()));
+    }
+
+    // =========================================================================
+    // Debug Trait Tests
+    // =========================================================================
+
+    #[test]
+    fn test_registry_implements_debug() {
+        let registry = SpotToolRegistry::new();
+        let debug_str = format!("{:?}", registry);
+        assert!(debug_str.contains("SpotToolRegistry"));
+    }
+
+    // =========================================================================
+    // Arc Cloning Tests
+    // =========================================================================
+
+    #[test]
+    fn test_arc_tools_can_be_cloned() {
+        let registry = SpotToolRegistry::new();
+        let tools = registry.all_tools();
+
+        for tool in &tools {
+            let cloned = Arc::clone(tool);
+            assert_eq!(tool.definition().name, cloned.definition().name);
+        }
+    }
+
+    #[test]
+    fn test_tools_are_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        let registry = SpotToolRegistry::new();
+        let tools = registry.all_tools();
+
+        for tool in tools {
+            // This compiles only if ArcTool is Send + Sync
+            let _ = std::thread::spawn(move || {
+                let _ = tool.definition();
+            });
         }
     }
 }

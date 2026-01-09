@@ -331,3 +331,776 @@ pub fn show_models(db: &Database, registry: &ModelRegistry, current_model: &str)
     println!("\x1b[2mCurrent: {}\x1b[0m", current_model);
     println!("\x1b[2mUse /model <name> to switch\x1b[0m\n");
 }
+
+// =========================================================================
+// Utility functions for testability
+// =========================================================================
+
+/// Parse and validate reasoning effort level.
+/// Returns None if invalid, Some(level) if valid.
+pub fn validate_reasoning_effort(level: &str) -> Option<&'static str> {
+    match level {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        _ => None,
+    }
+}
+
+/// Parse and validate verbosity level.
+/// Returns None if invalid, Some(level) if valid.
+pub fn validate_verbosity(level: &str) -> Option<&'static str> {
+    match level {
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agents::{AgentInfo, AgentVisibility};
+    use tempfile::TempDir;
+
+    // =========================================================================
+    // Helper: Create test database
+    // =========================================================================
+
+    fn create_test_db() -> (TempDir, Database) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.db");
+        let db = Database::open_at(path).unwrap();
+        db.migrate().unwrap();
+        (tmp, db)
+    }
+
+    // =========================================================================
+    // cmd_cd Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_cd_no_args_prints_current_dir() {
+        // Just verify it doesn't panic when called with empty args
+        cmd_cd("");
+    }
+
+    #[test]
+    fn test_cmd_cd_tilde_expansion() {
+        // Test that tilde expansion is performed
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let original = std::env::current_dir().unwrap();
+
+        // Change to home via tilde
+        cmd_cd("~");
+
+        // Verify we're in home (or close to it - symlinks may differ)
+        let current = std::env::current_dir().unwrap();
+        assert!(
+            current.starts_with(&home) || current.to_string_lossy().contains("home"),
+            "Expected to be in home dir after cd ~"
+        );
+
+        // Restore original
+        std::env::set_current_dir(original).ok();
+    }
+
+    #[test]
+    fn test_cmd_cd_invalid_path() {
+        // Should print error but not panic
+        cmd_cd("/nonexistent/path/that/does/not/exist/12345");
+    }
+
+    // =========================================================================
+    // cmd_version Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_version_no_panic() {
+        // Just verify it runs without panic
+        cmd_version();
+    }
+
+    // =========================================================================
+    // cmd_agents Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_agents_empty_list() {
+        let agents: Vec<AgentInfo> = vec![];
+        cmd_agents(&agents, "stockpot", false);
+    }
+
+    #[test]
+    fn test_cmd_agents_with_agents() {
+        let agents = vec![
+            AgentInfo {
+                name: "stockpot".to_string(),
+                display_name: "Stockpot".to_string(),
+                description: "Main agent".to_string(),
+                visibility: AgentVisibility::Main,
+            },
+            AgentInfo {
+                name: "planning".to_string(),
+                display_name: "Planning".to_string(),
+                description: "Planning agent".to_string(),
+                visibility: AgentVisibility::Main,
+            },
+        ];
+
+        // Should not panic
+        cmd_agents(&agents, "stockpot", false);
+    }
+
+    #[test]
+    fn test_cmd_agents_with_visibility_badges() {
+        let agents = vec![
+            AgentInfo {
+                name: "main".to_string(),
+                display_name: "Main Agent".to_string(),
+                description: "A main agent".to_string(),
+                visibility: AgentVisibility::Main,
+            },
+            AgentInfo {
+                name: "sub".to_string(),
+                display_name: "Sub Agent".to_string(),
+                description: "A sub agent".to_string(),
+                visibility: AgentVisibility::Sub,
+            },
+            AgentInfo {
+                name: "hidden".to_string(),
+                display_name: "Hidden Agent".to_string(),
+                description: "A hidden agent".to_string(),
+                visibility: AgentVisibility::Hidden,
+            },
+        ];
+
+        // With visibility badges
+        cmd_agents(&agents, "main", true);
+    }
+
+    #[test]
+    fn test_cmd_agents_current_marker() {
+        let agents = vec![
+            AgentInfo {
+                name: "agent1".to_string(),
+                display_name: "Agent 1".to_string(),
+                description: "First".to_string(),
+                visibility: AgentVisibility::Main,
+            },
+            AgentInfo {
+                name: "agent2".to_string(),
+                display_name: "Agent 2".to_string(),
+                description: "Second".to_string(),
+                visibility: AgentVisibility::Main,
+            },
+        ];
+
+        // Marker should show for agent2
+        cmd_agents(&agents, "agent2", false);
+    }
+
+    // =========================================================================
+    // cmd_new Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_new_no_panic() {
+        cmd_new();
+    }
+
+    // =========================================================================
+    // cmd_tools Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_tools_no_panic() {
+        cmd_tools();
+    }
+
+    // =========================================================================
+    // show_help Tests
+    // =========================================================================
+
+    #[test]
+    fn test_show_help_no_panic() {
+        show_help();
+    }
+
+    // =========================================================================
+    // validate_reasoning_effort Tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_reasoning_effort_valid() {
+        assert_eq!(validate_reasoning_effort("minimal"), Some("minimal"));
+        assert_eq!(validate_reasoning_effort("low"), Some("low"));
+        assert_eq!(validate_reasoning_effort("medium"), Some("medium"));
+        assert_eq!(validate_reasoning_effort("high"), Some("high"));
+        assert_eq!(validate_reasoning_effort("xhigh"), Some("xhigh"));
+    }
+
+    #[test]
+    fn test_validate_reasoning_effort_invalid() {
+        assert_eq!(validate_reasoning_effort(""), None);
+        assert_eq!(validate_reasoning_effort("invalid"), None);
+        assert_eq!(validate_reasoning_effort("MEDIUM"), None);
+        assert_eq!(validate_reasoning_effort("extreme"), None);
+    }
+
+    // =========================================================================
+    // validate_verbosity Tests
+    // =========================================================================
+
+    #[test]
+    fn test_validate_verbosity_valid() {
+        assert_eq!(validate_verbosity("low"), Some("low"));
+        assert_eq!(validate_verbosity("medium"), Some("medium"));
+        assert_eq!(validate_verbosity("high"), Some("high"));
+    }
+
+    #[test]
+    fn test_validate_verbosity_invalid() {
+        assert_eq!(validate_verbosity(""), None);
+        assert_eq!(validate_verbosity("invalid"), None);
+        assert_eq!(validate_verbosity("LOW"), None);
+        assert_eq!(validate_verbosity("minimal"), None);
+    }
+
+    // =========================================================================
+    // cmd_reasoning Tests (with database)
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_reasoning_empty_args() {
+        let (_tmp, db) = create_test_db();
+        // Should show current value without panicking
+        cmd_reasoning(&db, "");
+    }
+
+    #[test]
+    fn test_cmd_reasoning_valid_level() {
+        let (_tmp, db) = create_test_db();
+        cmd_reasoning(&db, "high");
+
+        // Verify it was set
+        let settings = Settings::new(&db);
+        assert_eq!(settings.get_or("reasoning_effort", "medium"), "high");
+    }
+
+    #[test]
+    fn test_cmd_reasoning_invalid_level() {
+        let (_tmp, db) = create_test_db();
+        cmd_reasoning(&db, "invalid");
+        // Should print usage, not set anything
+    }
+
+    // =========================================================================
+    // cmd_verbosity Tests (with database)
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_verbosity_empty_args() {
+        let (_tmp, db) = create_test_db();
+        cmd_verbosity(&db, "");
+    }
+
+    #[test]
+    fn test_cmd_verbosity_valid_level() {
+        let (_tmp, db) = create_test_db();
+        cmd_verbosity(&db, "high");
+
+        let settings = Settings::new(&db);
+        assert_eq!(settings.get_or("verbosity", "medium"), "high");
+    }
+
+    #[test]
+    fn test_cmd_verbosity_invalid_level() {
+        let (_tmp, db) = create_test_db();
+        cmd_verbosity(&db, "extreme");
+    }
+
+    // =========================================================================
+    // cmd_show Tests (with database)
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_show_basic() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+
+        cmd_show(
+            &db,
+            "stockpot",
+            "Stockpot",
+            "gpt-4o",
+            Some("test-session"),
+            5,
+            &registry,
+        );
+    }
+
+    #[test]
+    fn test_cmd_show_no_session() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+
+        cmd_show(&db, "stockpot", "Stockpot", "gpt-4o", None, 0, &registry);
+    }
+
+    #[test]
+    fn test_cmd_show_with_model_settings() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+
+        // Set some model settings via direct database insert
+        db.conn()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                ["model_settings.gpt-4o.temperature", "0.7"],
+            )
+            .ok();
+
+        cmd_show(
+            &db,
+            "stockpot",
+            "Stockpot",
+            "gpt-4o",
+            Some("test"),
+            10,
+            &registry,
+        );
+    }
+
+    #[test]
+    fn test_cmd_show_with_pinned_model() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+        let settings = Settings::new(&db);
+
+        // Pin a model to stockpot agent
+        settings
+            .set_agent_pinned_model("stockpot", "claude-3-opus")
+            .unwrap();
+
+        cmd_show(
+            &db,
+            "stockpot",
+            "Stockpot",
+            "gpt-4o", // current_model different from pinned
+            Some("test-session"),
+            5,
+            &registry,
+        );
+    }
+
+    #[test]
+    fn test_cmd_show_yolo_mode_on() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+        let settings = Settings::new(&db);
+
+        // Enable yolo mode
+        settings.set("yolo_mode", "true").ok();
+
+        cmd_show(&db, "stockpot", "Stockpot", "gpt-4o", None, 3, &registry);
+    }
+
+    #[test]
+    fn test_cmd_show_with_model_in_registry() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        // Add a model to registry with context length
+        registry.add(ModelConfig {
+            name: "test-model".to_string(),
+            context_length: 128000,
+            ..Default::default()
+        });
+
+        cmd_show(
+            &db,
+            "stockpot",
+            "Stockpot",
+            "test-model",
+            Some("session-1"),
+            20,
+            &registry,
+        );
+    }
+
+    #[test]
+    fn test_cmd_show_with_reasoning_effort_setting() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+
+        // Set reasoning effort via database
+        db.conn()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                ["model_settings.gpt-4o.reasoning_effort", "high"],
+            )
+            .ok();
+
+        cmd_show(&db, "stockpot", "Stockpot", "gpt-4o", None, 5, &registry);
+    }
+
+    #[test]
+    fn test_cmd_show_with_extended_thinking() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+
+        // Set extended thinking via database
+        db.conn()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                ["model_settings.claude-3.extended_thinking", "true"],
+            )
+            .ok();
+
+        cmd_show(
+            &db,
+            "stockpot",
+            "Stockpot",
+            "claude-3",
+            Some("thinking-session"),
+            10,
+            &registry,
+        );
+    }
+
+    #[test]
+    fn test_cmd_show_extended_thinking_disabled() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+
+        // Set extended thinking to false
+        db.conn()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                ["model_settings.claude-3.extended_thinking", "false"],
+            )
+            .ok();
+
+        cmd_show(&db, "stockpot", "Stockpot", "claude-3", None, 0, &registry);
+    }
+
+    // =========================================================================
+    // cmd_cd Additional Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_cd_valid_path() {
+        let tmp = TempDir::new().unwrap();
+
+        // Just verify cmd_cd doesn't panic on valid paths
+        // Note: We can't reliably check current_dir() changed because
+        // other tests running in parallel may change it
+        cmd_cd(tmp.path().to_str().unwrap());
+
+        // Verify the directory still exists
+        assert!(tmp.path().exists());
+    }
+
+    #[test]
+    fn test_cmd_cd_with_spaces_in_path() {
+        let tmp = TempDir::new().unwrap();
+        let spaced_dir = tmp.path().join("path with spaces");
+        std::fs::create_dir(&spaced_dir).unwrap();
+
+        // Just verify cmd_cd doesn't panic on paths with spaces
+        // Note: We can't reliably check current_dir() changed because
+        // other tests running in parallel may change it
+        cmd_cd(spaced_dir.to_str().unwrap());
+
+        // Verify the directory still exists (wasn't corrupted)
+        assert!(spaced_dir.exists());
+    }
+
+    // =========================================================================
+    // show_models Tests
+    // =========================================================================
+
+    #[test]
+    fn test_show_models_empty_registry() {
+        let (_tmp, db) = create_test_db();
+        let registry = ModelRegistry::default();
+
+        // Should not panic, prints "no models" message
+        show_models(&db, &registry, "gpt-4o");
+    }
+
+    #[test]
+    fn test_show_models_no_credentials() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "gpt-4o".to_string(),
+            model_type: crate::models::ModelType::Openai,
+            ..Default::default()
+        });
+
+        // No API key, so list_available returns empty
+        show_models(&db, &registry, "gpt-4o");
+    }
+
+    #[test]
+    fn test_show_models_with_available_models() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        // Add OpenAI model
+        registry.add(ModelConfig {
+            name: "gpt-4o".to_string(),
+            model_type: crate::models::ModelType::Openai,
+            description: Some("GPT-4 Omni model".to_string()),
+            context_length: 128000,
+            ..Default::default()
+        });
+
+        // Save API key so model is available
+        db.save_api_key("OPENAI_API_KEY", "sk-test").unwrap();
+
+        show_models(&db, &registry, "gpt-4o");
+    }
+
+    #[test]
+    fn test_show_models_multiple_providers() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        // Add models from different providers
+        registry.add(ModelConfig {
+            name: "gpt-4o".to_string(),
+            model_type: crate::models::ModelType::Openai,
+            ..Default::default()
+        });
+        registry.add(ModelConfig {
+            name: "claude-3-opus".to_string(),
+            model_type: crate::models::ModelType::Anthropic,
+            description: Some("Anthropic's most capable model".to_string()),
+            ..Default::default()
+        });
+        registry.add(ModelConfig {
+            name: "gemini-pro".to_string(),
+            model_type: crate::models::ModelType::Gemini,
+            ..Default::default()
+        });
+
+        // Set up credentials
+        db.save_api_key("OPENAI_API_KEY", "sk-test").unwrap();
+        db.save_api_key("ANTHROPIC_API_KEY", "sk-ant-test").unwrap();
+        db.save_api_key("GEMINI_API_KEY", "AIza-test").unwrap();
+
+        show_models(&db, &registry, "claude-3-opus");
+    }
+
+    #[test]
+    fn test_show_models_current_marker() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "model-a".to_string(),
+            model_type: crate::models::ModelType::RoundRobin, // always available
+            ..Default::default()
+        });
+        registry.add(ModelConfig {
+            name: "model-b".to_string(),
+            model_type: crate::models::ModelType::RoundRobin,
+            ..Default::default()
+        });
+
+        // Show models with model-b as current
+        show_models(&db, &registry, "model-b");
+    }
+
+    #[test]
+    fn test_show_models_without_description() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "simple-model".to_string(),
+            model_type: crate::models::ModelType::RoundRobin,
+            description: None,
+            ..Default::default()
+        });
+
+        show_models(&db, &registry, "simple-model");
+    }
+
+    #[test]
+    fn test_show_models_with_description() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "described-model".to_string(),
+            model_type: crate::models::ModelType::RoundRobin,
+            description: Some("A model with a description".to_string()),
+            ..Default::default()
+        });
+
+        show_models(&db, &registry, "other-model");
+    }
+
+    #[test]
+    fn test_show_models_custom_provider() {
+        use std::collections::HashMap;
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        // Custom OpenAI-compatible model
+        registry.add(ModelConfig {
+            name: "mycustom:gpt-4".to_string(),
+            model_type: crate::models::ModelType::CustomOpenai,
+            custom_endpoint: Some(crate::models::CustomEndpoint {
+                url: "https://custom.api.com".to_string(),
+                api_key: Some("literal-key".to_string()),
+                headers: HashMap::new(),
+                ca_certs_path: None,
+            }),
+            ..Default::default()
+        });
+
+        show_models(&db, &registry, "mycustom:gpt-4");
+    }
+
+    #[test]
+    fn test_show_models_azure_provider() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "azure-gpt4".to_string(),
+            model_type: crate::models::ModelType::AzureOpenai,
+            ..Default::default()
+        });
+
+        db.save_api_key("AZURE_OPENAI_API_KEY", "azure-key")
+            .unwrap();
+
+        show_models(&db, &registry, "azure-gpt4");
+    }
+
+    #[test]
+    fn test_show_models_openrouter_provider() {
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "openrouter-model".to_string(),
+            model_type: crate::models::ModelType::Openrouter,
+            description: Some("Via OpenRouter".to_string()),
+            ..Default::default()
+        });
+
+        db.save_api_key("OPENROUTER_API_KEY", "or-key").unwrap();
+
+        show_models(&db, &registry, "openrouter-model");
+    }
+
+    #[test]
+    fn test_show_models_claude_code_oauth() {
+        use crate::auth::TokenStorage;
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "claude-code".to_string(),
+            model_type: crate::models::ModelType::ClaudeCode,
+            ..Default::default()
+        });
+
+        // Set up OAuth token
+        let storage = TokenStorage::new(&db);
+        storage
+            .save(
+                "claude_code",
+                "access",
+                Some("refresh"),
+                Some(3600),
+                None,
+                None,
+            )
+            .unwrap();
+
+        show_models(&db, &registry, "claude-code");
+    }
+
+    #[test]
+    fn test_show_models_chatgpt_oauth() {
+        use crate::auth::TokenStorage;
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "chatgpt-oauth".to_string(),
+            model_type: crate::models::ModelType::ChatgptOauth,
+            ..Default::default()
+        });
+
+        let storage = TokenStorage::new(&db);
+        storage
+            .save("chatgpt", "access", Some("refresh"), Some(3600), None, None)
+            .unwrap();
+
+        show_models(&db, &registry, "chatgpt-oauth");
+    }
+
+    #[test]
+    fn test_show_models_custom_anthropic() {
+        use std::collections::HashMap;
+        let (_tmp, db) = create_test_db();
+        let mut registry = ModelRegistry::default();
+
+        registry.add(ModelConfig {
+            name: "bedrock:claude".to_string(),
+            model_type: crate::models::ModelType::CustomAnthropic,
+            custom_endpoint: Some(crate::models::CustomEndpoint {
+                url: "https://bedrock.amazonaws.com".to_string(),
+                api_key: Some("aws-key".to_string()),
+                headers: HashMap::new(),
+                ca_certs_path: None,
+            }),
+            ..Default::default()
+        });
+
+        show_models(&db, &registry, "bedrock:claude");
+    }
+
+    // =========================================================================
+    // cmd_reasoning Additional Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_reasoning_all_valid_levels() {
+        let (_tmp, db) = create_test_db();
+
+        for level in ["minimal", "low", "medium", "high", "xhigh"] {
+            cmd_reasoning(&db, level);
+            let settings = Settings::new(&db);
+            assert_eq!(settings.get_or("reasoning_effort", ""), level);
+        }
+    }
+
+    // =========================================================================
+    // cmd_verbosity Additional Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cmd_verbosity_all_valid_levels() {
+        let (_tmp, db) = create_test_db();
+
+        for level in ["low", "medium", "high"] {
+            cmd_verbosity(&db, level);
+            let settings = Settings::new(&db);
+            assert_eq!(settings.get_or("verbosity", ""), level);
+        }
+    }
+}

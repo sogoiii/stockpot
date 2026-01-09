@@ -138,8 +138,9 @@ impl ModelRegistry {
         let result = db.conn().execute(
             "INSERT OR REPLACE INTO models (name, model_type, model_id, context_length,
                 supports_thinking, supports_vision, supports_tools, description,
-                api_endpoint, api_key_env, headers, is_builtin, source, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, unixepoch())",
+                api_endpoint, api_key_env, headers, azure_deployment, azure_api_version,
+                is_builtin, source, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, unixepoch())",
             params![
                 &config.name,
                 config.model_type.to_string(),
@@ -155,6 +156,8 @@ impl ModelRegistry {
                     .as_ref()
                     .and_then(|e| e.api_key.as_ref()),
                 headers_json,
+                &config.azure_deployment,
+                &config.azure_api_version,
                 source,
             ],
         );
@@ -340,12 +343,812 @@ impl ModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    // =========================================================================
+    // Test Helpers
+    // =========================================================================
+
+    fn setup_test_db() -> (TempDir, Database) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = Database::open_at(db_path).unwrap();
+        db.migrate().unwrap();
+        (temp_dir, db)
+    }
+
+    fn create_test_model(name: &str) -> ModelConfig {
+        ModelConfig {
+            name: name.to_string(),
+            model_type: ModelType::Openai,
+            model_id: Some(format!("{}-id", name)),
+            context_length: 128_000,
+            supports_thinking: false,
+            supports_vision: true,
+            supports_tools: true,
+            description: Some(format!("Test model: {}", name)),
+            custom_endpoint: None,
+            azure_deployment: None,
+            azure_api_version: None,
+            round_robin_models: Vec::new(),
+        }
+    }
+
+    fn create_custom_model(name: &str, url: &str, api_key: Option<&str>) -> ModelConfig {
+        ModelConfig {
+            name: name.to_string(),
+            model_type: ModelType::CustomOpenai,
+            model_id: None,
+            context_length: 8192,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_tools: true,
+            description: None,
+            custom_endpoint: Some(CustomEndpoint {
+                url: url.to_string(),
+                api_key: api_key.map(|s| s.to_string()),
+                headers: HashMap::new(),
+                ca_certs_path: None,
+            }),
+            azure_deployment: None,
+            azure_api_version: None,
+            round_robin_models: Vec::new(),
+        }
+    }
+
+    // =========================================================================
+    // Basic Registry Operations Tests
+    // =========================================================================
 
     #[test]
     fn test_registry_starts_empty() {
         let registry = ModelRegistry::new();
         assert!(registry.is_empty());
-        // Models are now added explicitly via /add_model or OAuth
-        // The catalog provides available models, database stores configured ones
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_add_and_get_model() {
+        let mut registry = ModelRegistry::new();
+        let model = create_test_model("test-model");
+
+        registry.add(model.clone());
+
+        assert!(!registry.is_empty());
+        assert_eq!(registry.len(), 1);
+
+        let retrieved = registry.get("test-model");
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().name, "test-model");
+    }
+
+    #[test]
+    fn test_contains() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("exists"));
+
+        assert!(registry.contains("exists"));
+        assert!(!registry.contains("does-not-exist"));
+    }
+
+    #[test]
+    fn test_names_iterator() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("alpha"));
+        registry.add(create_test_model("beta"));
+
+        let names: Vec<&str> = registry.names().collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"alpha"));
+        assert!(names.contains(&"beta"));
+    }
+
+    #[test]
+    fn test_list_returns_sorted() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("zebra"));
+        registry.add(create_test_model("alpha"));
+        registry.add(create_test_model("monkey"));
+
+        let list = registry.list();
+        assert_eq!(list, vec!["alpha", "monkey", "zebra"]);
+    }
+
+    #[test]
+    fn test_all_iterator() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("one"));
+        registry.add(create_test_model("two"));
+
+        let configs: Vec<_> = registry.all().collect();
+        assert_eq!(configs.len(), 2);
+    }
+
+    #[test]
+    fn test_add_overwrites_existing() {
+        let mut registry = ModelRegistry::new();
+
+        let model1 = ModelConfig {
+            name: "same-name".to_string(),
+            description: Some("first".to_string()),
+            ..Default::default()
+        };
+        let model2 = ModelConfig {
+            name: "same-name".to_string(),
+            description: Some("second".to_string()),
+            ..Default::default()
+        };
+
+        registry.add(model1);
+        registry.add(model2);
+
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.get("same-name").unwrap().description,
+            Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn test_get_nonexistent_returns_none() {
+        let registry = ModelRegistry::new();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    // =========================================================================
+    // Database Operations Tests
+    // =========================================================================
+
+    #[test]
+    fn test_load_from_db_empty() {
+        let (_temp, db) = setup_test_db();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn test_add_model_to_db_and_load() {
+        let (_temp, db) = setup_test_db();
+        let model = create_test_model("db-model");
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        assert_eq!(registry.len(), 1);
+        assert!(registry.contains("db-model"));
+
+        let loaded = registry.get("db-model").unwrap();
+        assert_eq!(loaded.model_id, Some("db-model-id".to_string()));
+        assert_eq!(loaded.context_length, 128_000);
+    }
+
+    #[test]
+    fn test_add_model_to_db_with_source() {
+        let (_temp, db) = setup_test_db();
+        let model = create_test_model("catalog-model");
+
+        ModelRegistry::add_model_to_db_with_source(&db, &model, "catalog").unwrap();
+
+        // Verify source was saved
+        let source: String = db
+            .conn()
+            .query_row(
+                "SELECT source FROM models WHERE name = ?",
+                params!["catalog-model"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "catalog");
+    }
+
+    #[test]
+    fn test_add_model_infers_oauth_source() {
+        let (_temp, db) = setup_test_db();
+        let model = ModelConfig {
+            name: "claude-code-model".to_string(),
+            model_type: ModelType::ClaudeCode,
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let source: String = db
+            .conn()
+            .query_row(
+                "SELECT source FROM models WHERE name = ?",
+                params!["claude-code-model"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "oauth");
+    }
+
+    #[test]
+    fn test_add_model_infers_custom_source() {
+        let (_temp, db) = setup_test_db();
+        let model = create_custom_model("custom-model", "https://api.example.com", Some("key"));
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let source: String = db
+            .conn()
+            .query_row(
+                "SELECT source FROM models WHERE name = ?",
+                params!["custom-model"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source, "custom");
+    }
+
+    #[test]
+    fn test_add_model_to_db_upserts() {
+        let (_temp, db) = setup_test_db();
+
+        let model1 = ModelConfig {
+            name: "upsert-test".to_string(),
+            description: Some("first".to_string()),
+            ..Default::default()
+        };
+        let model2 = ModelConfig {
+            name: "upsert-test".to_string(),
+            description: Some("second".to_string()),
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model1).unwrap();
+        ModelRegistry::add_model_to_db(&db, &model2).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.get("upsert-test").unwrap().description,
+            Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn test_remove_model_from_db() {
+        let (_temp, db) = setup_test_db();
+        let model = create_test_model("to-remove");
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        assert!(registry.contains("to-remove"));
+
+        ModelRegistry::remove_model_from_db(&db, "to-remove").unwrap();
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        assert!(!registry.contains("to-remove"));
+    }
+
+    #[test]
+    fn test_remove_nonexistent_model_succeeds() {
+        let (_temp, db) = setup_test_db();
+        // Should not error
+        ModelRegistry::remove_model_from_db(&db, "nonexistent").unwrap();
+    }
+
+    #[test]
+    fn test_reload_from_db() {
+        let (_temp, db) = setup_test_db();
+        let mut registry = ModelRegistry::new();
+
+        // Add model directly to registry (not db)
+        registry.add(create_test_model("in-memory-only"));
+        assert!(registry.contains("in-memory-only"));
+
+        // Add model to db
+        ModelRegistry::add_model_to_db(&db, &create_test_model("in-db")).unwrap();
+
+        // Reload - should clear in-memory and load from db
+        registry.reload_from_db(&db).unwrap();
+
+        assert!(!registry.contains("in-memory-only"));
+        assert!(registry.contains("in-db"));
+    }
+
+    #[test]
+    fn test_load_multiple_models_from_db() {
+        let (_temp, db) = setup_test_db();
+
+        for i in 0..5 {
+            let model = create_test_model(&format!("model-{}", i));
+            ModelRegistry::add_model_to_db(&db, &model).unwrap();
+        }
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        assert_eq!(registry.len(), 5);
+    }
+
+    #[test]
+    fn test_load_model_with_custom_endpoint() {
+        let (_temp, db) = setup_test_db();
+        let model = create_custom_model("custom-ep", "https://api.test.com/v1", Some("secret"));
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let loaded = registry.get("custom-ep").unwrap();
+
+        assert!(loaded.custom_endpoint.is_some());
+        let endpoint = loaded.custom_endpoint.as_ref().unwrap();
+        assert_eq!(endpoint.url, "https://api.test.com/v1");
+        assert_eq!(endpoint.api_key, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn test_load_model_with_azure_config() {
+        let (_temp, db) = setup_test_db();
+        let model = ModelConfig {
+            name: "azure-model".to_string(),
+            model_type: ModelType::AzureOpenai,
+            azure_deployment: Some("my-deployment".to_string()),
+            azure_api_version: Some("2024-01-01".to_string()),
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let loaded = registry.get("azure-model").unwrap();
+
+        assert_eq!(loaded.azure_deployment, Some("my-deployment".to_string()));
+        assert_eq!(loaded.azure_api_version, Some("2024-01-01".to_string()));
+    }
+
+    #[test]
+    fn test_load_model_preserves_capabilities() {
+        let (_temp, db) = setup_test_db();
+        let model = ModelConfig {
+            name: "capable-model".to_string(),
+            supports_thinking: true,
+            supports_vision: true,
+            supports_tools: false,
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let loaded = registry.get("capable-model").unwrap();
+
+        assert!(loaded.supports_thinking);
+        assert!(loaded.supports_vision);
+        assert!(!loaded.supports_tools);
+    }
+
+    // =========================================================================
+    // File Operations Tests
+    // =========================================================================
+
+    #[test]
+    fn test_load_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("models.json");
+
+        let json = r#"[
+            {
+                "name": "file-model-1",
+                "model_type": "openai",
+                "context_length": 4096
+            },
+            {
+                "name": "file-model-2",
+                "model_type": "anthropic",
+                "context_length": 200000
+            }
+        ]"#;
+        std::fs::write(&file_path, json).unwrap();
+
+        let mut registry = ModelRegistry::new();
+        registry.load_file(&file_path).unwrap();
+
+        assert_eq!(registry.len(), 2);
+        assert!(registry.contains("file-model-1"));
+        assert!(registry.contains("file-model-2"));
+    }
+
+    #[test]
+    fn test_load_file_invalid_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("invalid.json");
+        std::fs::write(&file_path, "not valid json").unwrap();
+
+        let mut registry = ModelRegistry::new();
+        let result = registry.load_file(&file_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_file_not_found() {
+        let mut registry = ModelRegistry::new();
+        let result = registry.load_file(&PathBuf::from("/nonexistent/path/models.json"));
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // Config Directory Tests
+    // =========================================================================
+
+    #[test]
+    fn test_config_dir_returns_stockpot_path() {
+        let result = ModelRegistry::config_dir();
+        // Should succeed if home dir exists
+        if let Ok(path) = result {
+            assert!(path.ends_with(".stockpot"));
+        }
+    }
+
+    // =========================================================================
+    // Provider Availability Tests
+    // =========================================================================
+
+    #[test]
+    fn test_list_available_empty_registry() {
+        let (_temp, db) = setup_test_db();
+        let registry = ModelRegistry::new();
+
+        let available = registry.list_available(&db);
+        assert!(available.is_empty());
+    }
+
+    #[test]
+    fn test_list_available_with_api_key() {
+        let (_temp, db) = setup_test_db();
+
+        // Save API key to db
+        db.save_api_key("OPENAI_API_KEY", "test-key").unwrap();
+
+        // Add OpenAI model
+        let model = create_test_model("gpt-test");
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"gpt-test".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_without_api_key() {
+        let (_temp, db) = setup_test_db();
+
+        // Add OpenAI model but no API key
+        let model = create_test_model("gpt-no-key");
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(!available.contains(&"gpt-no-key".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_anthropic() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("ANTHROPIC_API_KEY", "test-key").unwrap();
+
+        let model = ModelConfig {
+            name: "claude-test".to_string(),
+            model_type: ModelType::Anthropic,
+            ..Default::default()
+        };
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"claude-test".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_gemini_with_google_key() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("GOOGLE_API_KEY", "test-key").unwrap();
+
+        let model = ModelConfig {
+            name: "gemini-test".to_string(),
+            model_type: ModelType::Gemini,
+            ..Default::default()
+        };
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"gemini-test".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_custom_with_literal_key() {
+        let (_temp, db) = setup_test_db();
+
+        let model = create_custom_model(
+            "custom-literal",
+            "https://api.test.com",
+            Some("literal-key"),
+        );
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"custom-literal".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_custom_with_env_var_key() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("CUSTOM_API_KEY", "test-key").unwrap();
+
+        let model = create_custom_model(
+            "custom-env",
+            "https://api.test.com",
+            Some("$CUSTOM_API_KEY"),
+        );
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"custom-env".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_custom_with_env_var_braces() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("BRACED_KEY", "test-key").unwrap();
+
+        let model = create_custom_model(
+            "custom-braced",
+            "https://api.test.com",
+            Some("${BRACED_KEY}"),
+        );
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"custom-braced".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_custom_no_key() {
+        let (_temp, db) = setup_test_db();
+
+        let model = create_custom_model("custom-no-key", "https://api.test.com", None);
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(!available.contains(&"custom-no-key".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_round_robin_always_available() {
+        let (_temp, db) = setup_test_db();
+
+        let model = ModelConfig {
+            name: "round-robin-test".to_string(),
+            model_type: ModelType::RoundRobin,
+            round_robin_models: vec!["model1".to_string(), "model2".to_string()],
+            ..Default::default()
+        };
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"round-robin-test".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_azure() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("AZURE_OPENAI_API_KEY", "test-key").unwrap();
+
+        let model = ModelConfig {
+            name: "azure-test".to_string(),
+            model_type: ModelType::AzureOpenai,
+            ..Default::default()
+        };
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"azure-test".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_openrouter() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("OPENROUTER_API_KEY", "test-key").unwrap();
+
+        let model = ModelConfig {
+            name: "openrouter-test".to_string(),
+            model_type: ModelType::Openrouter,
+            ..Default::default()
+        };
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"openrouter-test".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_mixed_providers() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("OPENAI_API_KEY", "key1").unwrap();
+        // No Anthropic key
+
+        let openai_model = create_test_model("openai-model");
+        let anthropic_model = ModelConfig {
+            name: "anthropic-model".to_string(),
+            model_type: ModelType::Anthropic,
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &openai_model).unwrap();
+        ModelRegistry::add_model_to_db(&db, &anthropic_model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert!(available.contains(&"openai-model".to_string()));
+        assert!(!available.contains(&"anthropic-model".to_string()));
+    }
+
+    #[test]
+    fn test_list_available_sorted() {
+        let (_temp, db) = setup_test_db();
+        db.save_api_key("OPENAI_API_KEY", "key").unwrap();
+
+        for name in ["zebra", "alpha", "monkey"] {
+            let model = create_test_model(name);
+            ModelRegistry::add_model_to_db(&db, &model).unwrap();
+        }
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let available = registry.list_available(&db);
+
+        assert_eq!(available, vec!["alpha", "monkey", "zebra"]);
+    }
+
+    // =========================================================================
+    // Deprecated Method Tests
+    // =========================================================================
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_load_returns_empty() {
+        let registry = ModelRegistry::load().unwrap();
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_reload_clears_registry() {
+        let mut registry = ModelRegistry::new();
+        registry.add(create_test_model("will-be-cleared"));
+        assert!(!registry.is_empty());
+
+        registry.reload().unwrap();
+        assert!(registry.is_empty());
+    }
+
+    // =========================================================================
+    // Edge Cases Tests
+    // =========================================================================
+
+    #[test]
+    fn test_model_with_special_characters_in_name() {
+        let (_temp, db) = setup_test_db();
+        let model = create_test_model("model-with_special.chars:v1");
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        assert!(registry.contains("model-with_special.chars:v1"));
+    }
+
+    #[test]
+    fn test_model_with_unicode_description() {
+        let (_temp, db) = setup_test_db();
+        let model = ModelConfig {
+            name: "unicode-model".to_string(),
+            description: Some("模型描述 🤖 émoji".to_string()),
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let loaded = registry.get("unicode-model").unwrap();
+        assert_eq!(loaded.description, Some("模型描述 🤖 émoji".to_string()));
+    }
+
+    #[test]
+    fn test_model_with_empty_optional_fields() {
+        let (_temp, db) = setup_test_db();
+        let model = ModelConfig {
+            name: "minimal-model".to_string(),
+            model_type: ModelType::Openai,
+            model_id: None,
+            context_length: 1000,
+            supports_thinking: false,
+            supports_vision: false,
+            supports_tools: false,
+            description: None,
+            custom_endpoint: None,
+            azure_deployment: None,
+            azure_api_version: None,
+            round_robin_models: Vec::new(),
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let loaded = registry.get("minimal-model").unwrap();
+
+        assert_eq!(loaded.model_id, None);
+        assert_eq!(loaded.description, None);
+        assert!(loaded.custom_endpoint.is_none());
+    }
+
+    #[test]
+    fn test_model_with_headers() {
+        let (_temp, db) = setup_test_db();
+        let mut headers = HashMap::new();
+        headers.insert("X-Custom-Header".to_string(), "value".to_string());
+        headers.insert("Authorization".to_string(), "Bearer xyz".to_string());
+
+        let model = ModelConfig {
+            name: "headers-model".to_string(),
+            model_type: ModelType::CustomOpenai,
+            custom_endpoint: Some(CustomEndpoint {
+                url: "https://api.test.com".to_string(),
+                api_key: Some("key".to_string()),
+                headers,
+                ca_certs_path: None,
+            }),
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let loaded = registry.get("headers-model").unwrap();
+        let endpoint = loaded.custom_endpoint.as_ref().unwrap();
+
+        assert_eq!(
+            endpoint.headers.get("X-Custom-Header"),
+            Some(&"value".to_string())
+        );
+        assert_eq!(
+            endpoint.headers.get("Authorization"),
+            Some(&"Bearer xyz".to_string())
+        );
+    }
+
+    #[test]
+    fn test_large_context_length() {
+        let (_temp, db) = setup_test_db();
+        let model = ModelConfig {
+            name: "large-context".to_string(),
+            context_length: 2_000_000, // 2M tokens
+            ..Default::default()
+        };
+
+        ModelRegistry::add_model_to_db(&db, &model).unwrap();
+
+        let registry = ModelRegistry::load_from_db(&db).unwrap();
+        let loaded = registry.get("large-context").unwrap();
+        assert_eq!(loaded.context_length, 2_000_000);
     }
 }
