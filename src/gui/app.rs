@@ -380,15 +380,19 @@ impl ChatApp {
             // User has scrolled up - preserve their position
             let max_offset = self.messages_list_state.max_offset_for_scrollbar();
             let clamped_y = prev_offset.y.clamp(-max_offset.height, gpui::Pixels::ZERO);
-
             self.messages_list_state
                 .set_offset_from_scrollbar(gpui::point(prev_offset.x, clamped_y));
         } else if self.is_generating {
             // At bottom during streaming - trigger smooth scroll animation
             // This prevents the "jumpy" instant scroll when content grows
             self.start_smooth_scroll_to_bottom();
+        } else {
+            // At bottom, not generating (streaming just ended or static view)
+            // Restore scroll to bottom since reset() moved us to top
+            let max_offset = self.messages_list_state.max_offset_for_scrollbar();
+            self.messages_list_state
+                .set_offset_from_scrollbar(gpui::point(prev_offset.x, -max_offset.height));
         }
-        // When not generating and at bottom, no animation needed - stay at current position
     }
 
     /// Start MCP servers
