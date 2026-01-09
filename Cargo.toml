@@ -117,3 +117,14 @@ gui = ["dep:gpui", "dep:gpui-component", "dep:gpui-component-assets", "dep:rfd",
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Pin zbus to avoid ashpd 0.12.0 compilation failure (zvariant_derive 5.9.0 breaking change)
+# See: https://github.com/bilelmoussaoui/ashpd/issues/323
+# Using zvariant-5.8.0 tag (before the breaking change)
+[patch.crates-io]
+zbus = { git = "https://github.com/dbus2/zbus", tag = "zvariant-5.8.0" }
+zvariant = { git = "https://github.com/dbus2/zbus", tag = "zvariant-5.8.0" }
+zvariant_derive = { git = "https://github.com/dbus2/zbus", tag = "zvariant-5.8.0" }
+zvariant_utils = { git = "https://github.com/dbus2/zbus", tag = "zvariant-5.8.0" }
+zbus_names = { git = "https://github.com/dbus2/zbus", tag = "zvariant-5.8.0" }
+zbus_macros = { git = "https://github.com/dbus2/zbus", tag = "zvariant-5.8.0" }
