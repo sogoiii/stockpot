@@ -131,6 +131,16 @@ pub struct ChatApp {
     show_default_model_dropdown: bool,
     /// Bounds of the default model dropdown trigger for positioning
     default_model_dropdown_bounds: Option<gpui::Bounds<gpui::Pixels>>,
+    /// Which model is currently expanded in settings (if any)
+    expanded_settings_model: Option<String>,
+    /// Input state for editing model temperature
+    model_temp_input_entity: Option<Entity<InputState>>,
+    /// Input state for editing model top_p
+    model_top_p_input_entity: Option<Entity<InputState>>,
+    /// Input state for editing model API key
+    model_api_key_input_entity: Option<Entity<InputState>>,
+    /// Timestamp of last successful model settings save (for visual feedback)
+    model_settings_save_success: Option<std::time::Instant>,
     /// Error message to display
     error_message: Option<String>,
 
@@ -288,6 +298,11 @@ impl ChatApp {
             model_dropdown_bounds: None,
             show_default_model_dropdown: false,
             default_model_dropdown_bounds: None,
+            expanded_settings_model: None,
+            model_temp_input_entity: None,
+            model_top_p_input_entity: None,
+            model_api_key_input_entity: None,
+            model_settings_save_success: None,
             error_message: None,
 
             settings_scroll_handle: ScrollHandle::new(),

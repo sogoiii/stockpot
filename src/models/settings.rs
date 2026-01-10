@@ -23,6 +23,8 @@ pub enum ModelSettingsError {
 pub struct ModelSettings {
     /// Temperature for sampling (0.0 - 2.0)
     pub temperature: Option<f32>,
+    /// Top-p (nucleus) sampling (0.0 - 1.0)
+    pub top_p: Option<f32>,
     /// Random seed for reproducible outputs
     pub seed: Option<i64>,
     /// Maximum tokens to generate
@@ -75,6 +77,11 @@ impl ModelSettings {
             "temperature" => {
                 self.temperature = Some(value.parse().map_err(|_| {
                     ModelSettingsError::ParseError(format!("Invalid temperature: {}", value))
+                })?);
+            }
+            "top_p" => {
+                self.top_p = Some(value.parse().map_err(|_| {
+                    ModelSettingsError::ParseError(format!("Invalid top_p: {}", value))
                 })?);
             }
             "seed" => {
@@ -197,6 +204,11 @@ impl ModelSettings {
         self.temperature.unwrap_or(0.7)
     }
 
+    /// Get effective top_p (with default).
+    pub fn effective_top_p(&self) -> f32 {
+        self.top_p.unwrap_or(1.0)
+    }
+
     /// Get effective max_tokens (with default).
     pub fn effective_max_tokens(&self) -> i32 {
         self.max_tokens.unwrap_or(16384)
@@ -216,6 +228,7 @@ impl ModelSettings {
     pub fn valid_keys() -> &'static [&'static str] {
         &[
             "temperature",
+            "top_p",
             "seed",
             "max_tokens",
             "extended_thinking",
@@ -234,6 +247,7 @@ impl ModelSettings {
     /// Check if all settings are at their defaults (None).
     pub fn is_empty(&self) -> bool {
         self.temperature.is_none()
+            && self.top_p.is_none()
             && self.seed.is_none()
             && self.max_tokens.is_none()
             && self.extended_thinking.is_none()

@@ -114,10 +114,10 @@ impl ChatApp {
                                 .bg(theme.panel_background)
                                 .children(
                                     [
+                                        SettingsTab::General,
+                                        SettingsTab::Models,
                                         SettingsTab::PinnedAgents,
                                         SettingsTab::McpServers,
-                                        SettingsTab::Models,
-                                        SettingsTab::General,
                                     ]
                                     .into_iter()
                                     .map(|t| {

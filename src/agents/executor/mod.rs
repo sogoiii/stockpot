@@ -23,6 +23,7 @@ pub use types::{ExecutorError, ExecutorResult, ExecutorStreamReceiver};
 use crate::agents::{AgentManager, SpotAgent};
 use crate::config::Settings;
 use crate::db::Database;
+use crate::models::settings::ModelSettings as SpotModelSettings;
 use crate::mcp::McpManager;
 use crate::messaging::{EventBridge, MessageSender};
 use crate::models::ModelRegistry;
@@ -181,10 +182,21 @@ impl<'a> AgentExecutor<'a> {
 
         let serdes_agent = builder.build();
 
+        // Load per-model settings from database
+        let spot_settings = SpotModelSettings::load(self.db, model_name).unwrap_or_default();
+
+        // Convert to serdes_ai_core::ModelSettings
+        let core_settings = serdes_ai_core::ModelSettings::new()
+            .temperature(spot_settings.effective_temperature() as f64)
+            .top_p(spot_settings.effective_top_p() as f64);
+
         // Set up run options with message history if provided
         let options = match message_history {
-            Some(history) => RunOptions::new().message_history(history),
-            None => RunOptions::new(),
+            Some(history) => RunOptions::new()
+                .model_settings(core_settings)
+                .message_history(history),
+            None => RunOptions::new()
+                .model_settings(core_settings),
         };
 
         // Run the agent

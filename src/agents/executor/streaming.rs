@@ -22,6 +22,7 @@ use serdes_ai_tools::{Tool, ToolDefinition};
 use crate::db::Database;
 use crate::mcp::McpManager;
 use crate::messaging::EventBridge;
+use crate::models::settings::ModelSettings as SpotModelSettings;
 use crate::tools::SpotToolRegistry;
 
 use super::adapters::{ArcModel, RecordingToolExecutor, ToolExecutorAdapter};
@@ -260,6 +261,14 @@ impl<'a> AgentExecutor<'a> {
             .await;
         tool_data.extend(mcp_tool_calls);
 
+        // Load per-model settings from database
+        let spot_settings = SpotModelSettings::load(self.db, model_name).unwrap_or_default();
+
+        // Convert to serdes_ai_core::ModelSettings
+        let core_settings = serdes_ai_core::ModelSettings::new()
+            .temperature(spot_settings.effective_temperature() as f64)
+            .top_p(spot_settings.effective_top_p() as f64);
+
         // Prepare data for the spawned task
         let system_prompt = spot_agent.system_prompt();
         let model_name_owned = model_name.to_string();
@@ -374,8 +383,11 @@ impl<'a> AgentExecutor<'a> {
             debug!(history_messages = history_len, "Setting up run options");
 
             let options = match message_history {
-                Some(history) => RunOptions::new().message_history(history),
-                None => RunOptions::new(),
+                Some(history) => RunOptions::new()
+                    .model_settings(core_settings)
+                    .message_history(history),
+                None => RunOptions::new()
+                    .model_settings(core_settings),
             };
 
             // Use real streaming from serdesAI
