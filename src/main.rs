@@ -107,7 +107,8 @@ fn main() -> anyhow::Result<()> {
 #[cfg(feature = "gui")]
 fn run_gui(args: Args) -> anyhow::Result<()> {
     use gpui::{
-        prelude::*, px, size, App, Application, Bounds, SharedString, WindowBounds, WindowOptions,
+        prelude::*, px, size, App, Application, Bounds, QuitMode, SharedString, WindowBounds,
+        WindowOptions,
     };
     use gpui_component::{Root, Theme, ThemeMode};
     use stockpot::gui;
@@ -162,8 +163,10 @@ fn run_gui(args: Args) -> anyhow::Result<()> {
     }
 
     // Create GPUI application with gpui-component assets
+    // Use LastWindowClosed quit mode so closing the window terminates the app on macOS
     Application::new()
         .with_assets(gpui_component_assets::Assets)
+        .with_quit_mode(QuitMode::LastWindowClosed)
         .run(|cx: &mut App| {
             // Initialize gpui-component (REQUIRED - sets up themes, icons, etc.)
             gpui_component::init(cx);

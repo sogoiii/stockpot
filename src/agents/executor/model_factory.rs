@@ -10,6 +10,7 @@ use serdes_ai_models::{infer_model, openai::OpenAIChatModel, Model};
 
 use crate::auth;
 use crate::db::Database;
+use crate::models::settings::ModelSettings as SpotModelSettings;
 use crate::models::{resolve_api_key, ModelRegistry, ModelType};
 
 use super::ExecutorError;
@@ -29,8 +30,37 @@ pub async fn get_model(
     db: &Database,
     model_name: &str,
     registry: &ModelRegistry,
+    model_settings: Option<&SpotModelSettings>,
 ) -> Result<Arc<dyn Model>, ExecutorError> {
-    debug!(model_name = %model_name, "get_model called");
+    debug!(model_name = %model_name, ?model_settings, "get_model called");
+
+    // Calculate thinking budget - default to enabled for models that support it
+    let thinking_budget = if registry
+        .get(model_name)
+        .map(|c| c.supports_thinking)
+        .unwrap_or(false)
+    {
+        // Model supports thinking - enable by default unless explicitly disabled
+        let explicitly_disabled = model_settings
+            .map(|s| s.extended_thinking == Some(false))
+            .unwrap_or(false);
+
+        if explicitly_disabled {
+            None
+        } else {
+            // Use configured budget or default to 10000
+            Some(
+                model_settings
+                    .and_then(|s| s.budget_tokens.map(|b| b as u64))
+                    .unwrap_or(10000),
+            )
+        }
+    } else {
+        // Model doesn't support thinking - only enable if explicitly configured
+        model_settings
+            .filter(|s| s.is_extended_thinking())
+            .and_then(|s| s.budget_tokens.map(|b| b as u64))
+    };
 
     // First, check if we have a custom config for this model in the registry
     if let Some(config) = registry.get(model_name) {
@@ -93,7 +123,7 @@ pub async fn get_model(
         match config.model_type {
             ModelType::ClaudeCode => {
                 debug!("Detected Claude Code OAuth model from config");
-                let model = auth::get_claude_code_model(db, model_name)
+                let model = auth::get_claude_code_model(db, model_name, thinking_budget)
                     .await
                     .map_err(|e| ExecutorError::Auth(e.to_string()))?;
                 return Ok(Arc::new(model));
@@ -123,7 +153,7 @@ pub async fn get_model(
 
     if model_name.starts_with("claude-code-") || model_name.starts_with("claude_code_") {
         debug!("Detected Claude Code OAuth model by prefix");
-        let model = auth::get_claude_code_model(db, model_name)
+        let model = auth::get_claude_code_model(db, model_name, thinking_budget)
             .await
             .map_err(|e| {
                 error!(error = %e, "Failed to get Claude Code model");
@@ -205,7 +235,7 @@ mod tests {
             Some("sk-literal-key-12345"),
         );
         registry.add(model);
-        let result = get_model(&db, "custom-literal", &registry).await;
+        let result = get_model(&db, "custom-literal", &registry, None).await;
         assert!(result.is_ok(), "Should succeed with literal API key");
         let model = result.unwrap();
         assert!(model.identifier().contains("test-model-id"));
@@ -223,7 +253,7 @@ mod tests {
             Some(&format!("${}", env_key)),
         );
         registry.add(model);
-        let result = get_model(&db, "custom-env", &registry).await;
+        let result = get_model(&db, "custom-env", &registry, None).await;
         std::env::remove_var(env_key);
         assert!(result.is_ok(), "Should succeed with env var API key");
     }
@@ -240,7 +270,7 @@ mod tests {
             Some(&format!("${}", key_name)),
         );
         registry.add(model);
-        let result = get_model(&db, "custom-db-key", &registry).await;
+        let result = get_model(&db, "custom-db-key", &registry, None).await;
         assert!(result.is_ok(), "Should resolve API key from database");
     }
 
@@ -254,7 +284,7 @@ mod tests {
             Some("$NONEXISTENT_API_KEY_XYZ_123"),
         );
         registry.add(model);
-        let result = get_model(&db, "custom-no-key", &registry).await;
+        let result = get_model(&db, "custom-no-key", &registry, None).await;
         assert!(result.is_err(), "Should error when env var not found");
         if let Err(ExecutorError::Config(msg)) = result {
             assert!(
@@ -272,7 +302,7 @@ mod tests {
         let mut registry = ModelRegistry::new();
         let model = create_custom_model("custom-missing", "https://api.example.com/v1", None);
         registry.add(model);
-        let result = get_model(&db, "custom-missing", &registry).await;
+        let result = get_model(&db, "custom-missing", &registry, None).await;
         assert!(result.is_err());
         if let Err(ExecutorError::Config(msg)) = result {
             assert!(msg.contains("no API key configured"));
@@ -285,7 +315,7 @@ mod tests {
     async fn test_legacy_chatgpt_prefix_detected() {
         let (_temp, db) = setup_test_db();
         let registry = ModelRegistry::new();
-        let result = get_model(&db, "chatgpt-4o-latest", &registry).await;
+        let result = get_model(&db, "chatgpt-4o-latest", &registry, None).await;
         assert!(result.is_err());
         assert!(
             matches!(result, Err(ExecutorError::Auth(_))),
@@ -297,7 +327,7 @@ mod tests {
     async fn test_legacy_chatgpt_underscore_prefix_detected() {
         let (_temp, db) = setup_test_db();
         let registry = ModelRegistry::new();
-        let result = get_model(&db, "chatgpt_4o_latest", &registry).await;
+        let result = get_model(&db, "chatgpt_4o_latest", &registry, None).await;
         assert!(result.is_err());
         assert!(
             matches!(result, Err(ExecutorError::Auth(_))),
@@ -309,7 +339,7 @@ mod tests {
     async fn test_legacy_claude_code_prefix_detected() {
         let (_temp, db) = setup_test_db();
         let registry = ModelRegistry::new();
-        let result = get_model(&db, "claude-code-sonnet", &registry).await;
+        let result = get_model(&db, "claude-code-sonnet", &registry, None).await;
         assert!(result.is_err());
         assert!(
             matches!(result, Err(ExecutorError::Auth(_))),
@@ -321,7 +351,7 @@ mod tests {
     async fn test_legacy_claude_code_underscore_prefix_detected() {
         let (_temp, db) = setup_test_db();
         let registry = ModelRegistry::new();
-        let result = get_model(&db, "claude_code_opus", &registry).await;
+        let result = get_model(&db, "claude_code_opus", &registry, None).await;
         assert!(result.is_err());
         assert!(
             matches!(result, Err(ExecutorError::Auth(_))),
@@ -333,7 +363,7 @@ mod tests {
     async fn test_custom_model_not_in_registry_returns_error() {
         let (_temp, db) = setup_test_db();
         let registry = ModelRegistry::new();
-        let result = get_model(&db, "openrouter:mistral-7b", &registry).await;
+        let result = get_model(&db, "openrouter:mistral-7b", &registry, None).await;
         assert!(result.is_err());
         if let Err(ExecutorError::Config(msg)) = result {
             assert!(msg.contains("not found in registry"));
@@ -353,7 +383,7 @@ mod tests {
             "local:phi-3",
             "custom:my-model",
         ] {
-            let result = get_model(&db, model_name, &registry).await;
+            let result = get_model(&db, model_name, &registry, None).await;
             assert!(
                 matches!(result, Err(ExecutorError::Config(_))),
                 "Model {} should fail when not in registry",
@@ -366,7 +396,7 @@ mod tests {
     async fn test_claude_code_colon_not_treated_as_custom() {
         let (_temp, db) = setup_test_db();
         let registry = ModelRegistry::new();
-        let result = get_model(&db, "claude-code:sonnet-4", &registry).await;
+        let result = get_model(&db, "claude-code:sonnet-4", &registry, None).await;
         match result {
             Err(ExecutorError::Auth(_)) => {}
             Err(ExecutorError::Config(ref msg)) if msg.contains("not found in registry") => {
@@ -386,7 +416,7 @@ mod tests {
             ..Default::default()
         };
         registry.add(model);
-        let result = get_model(&db, "my-claude", &registry).await;
+        let result = get_model(&db, "my-claude", &registry, None).await;
         assert!(matches!(result, Err(ExecutorError::Auth(_))));
     }
 
@@ -400,7 +430,7 @@ mod tests {
             ..Default::default()
         };
         registry.add(model);
-        let result = get_model(&db, "my-chatgpt", &registry).await;
+        let result = get_model(&db, "my-chatgpt", &registry, None).await;
         assert!(matches!(result, Err(ExecutorError::Auth(_))));
     }
 
@@ -416,7 +446,7 @@ mod tests {
             Some(&format!("${{{}}}", env_key)),
         );
         registry.add(model);
-        let result = get_model(&db, "custom-braced", &registry).await;
+        let result = get_model(&db, "custom-braced", &registry, None).await;
         std::env::remove_var(env_key);
         assert!(result.is_ok(), "Should resolve braced env var syntax");
     }
@@ -438,7 +468,7 @@ mod tests {
             ..Default::default()
         };
         registry.add(model);
-        let result = get_model(&db, "friendly-name", &registry).await;
+        let result = get_model(&db, "friendly-name", &registry, None).await;
         assert!(result.is_ok());
         let model = result.unwrap();
         assert!(model.identifier().contains("actual-api-model-id"));
@@ -461,7 +491,7 @@ mod tests {
             ..Default::default()
         };
         registry.add(model);
-        let result = get_model(&db, "fallback-name", &registry).await;
+        let result = get_model(&db, "fallback-name", &registry, None).await;
         assert!(result.is_ok());
         let model = result.unwrap();
         assert!(model.identifier().contains("fallback-name"));

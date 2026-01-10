@@ -105,9 +105,8 @@ impl ChatApp {
                 }
             }
             Message::Thinking(thinking) => {
-                // Display thinking in a muted style
-                self.conversation
-                    .append_to_current(&format!("\n\n💭 {}\n\n", thinking.text));
+                // Create or append to thinking section (collapsible with hover tooltip)
+                self.conversation.append_thinking(&thinking.text);
             }
             Message::Tool(tool) => {
                 match tool.status {

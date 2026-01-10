@@ -2,7 +2,7 @@
 //!
 //! Defines the core message structure for the conversation UI.
 
-use super::sections::{AgentSection, MessageSection};
+use super::sections::{AgentSection, MessageSection, ThinkingSection};
 
 /// Role of a message sender
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +172,69 @@ impl ChatMessage {
             if let MessageSection::NestedAgent(ref agent) = section {
                 if !agent.is_complete {
                     return Some(&agent.id);
+                }
+            }
+        }
+        None
+    }
+
+    // =========================================================================
+    // Thinking section methods
+    // =========================================================================
+
+    /// Start a new thinking section, returns the section ID
+    pub fn start_thinking_section(&mut self) -> String {
+        let section = ThinkingSection::new();
+        let id = section.id.clone();
+        self.sections.push(MessageSection::Thinking(section));
+        id
+    }
+
+    /// Append text to a specific thinking section by ID
+    pub fn append_to_thinking_section(&mut self, section_id: &str, text: &str) {
+        // Also update legacy content for flattened view
+        self.content.push_str(text);
+
+        for section in &mut self.sections {
+            if let MessageSection::Thinking(ref mut thinking) = section {
+                if thinking.id == section_id {
+                    thinking.append(text);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Mark a thinking section as complete
+    pub fn finish_thinking_section(&mut self, section_id: &str) {
+        for section in &mut self.sections {
+            if let MessageSection::Thinking(ref mut thinking) = section {
+                if thinking.id == section_id {
+                    thinking.finish();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Get a reference to a thinking section by ID
+    pub fn get_thinking_section(&self, section_id: &str) -> Option<&ThinkingSection> {
+        for section in &self.sections {
+            if let MessageSection::Thinking(ref thinking) = section {
+                if thinking.id == section_id {
+                    return Some(thinking);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the currently active (incomplete) thinking section ID if any
+    pub fn active_thinking_section_id(&self) -> Option<&str> {
+        for section in self.sections.iter().rev() {
+            if let MessageSection::Thinking(ref thinking) = section {
+                if !thinking.is_complete {
+                    return Some(&thinking.id);
                 }
             }
         }
@@ -382,5 +445,166 @@ mod tests {
 
         // Legacy content should have both
         assert_eq!(msg.content, "Main: Nested");
+    }
+
+    // ==========================================================================
+    // Thinking section tests
+    // ==========================================================================
+
+    #[test]
+    fn test_start_thinking_section() {
+        let mut msg = ChatMessage::assistant();
+
+        let section_id = msg.start_thinking_section();
+        assert!(!section_id.is_empty());
+
+        // Verify section was added
+        assert_eq!(msg.sections.len(), 1);
+        assert!(msg.sections[0].is_thinking());
+
+        // Verify we can retrieve it
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert_eq!(section.id, section_id);
+        assert_eq!(section.content, "");
+        assert!(!section.is_complete);
+    }
+
+    #[test]
+    fn test_append_to_thinking_section() {
+        let mut msg = ChatMessage::assistant();
+        let section_id = msg.start_thinking_section();
+
+        msg.append_to_thinking_section(&section_id, "Thinking about ");
+        msg.append_to_thinking_section(&section_id, "the problem");
+
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert_eq!(section.content, "Thinking about the problem");
+
+        // Also verify legacy content was updated
+        assert_eq!(msg.content, "Thinking about the problem");
+    }
+
+    #[test]
+    fn test_finish_thinking_section() {
+        let mut msg = ChatMessage::assistant();
+        let section_id = msg.start_thinking_section();
+
+        // Initially not complete
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(!section.is_complete);
+
+        // Finish it
+        msg.finish_thinking_section(&section_id);
+
+        // Now complete
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(section.is_complete);
+    }
+
+    #[test]
+    fn test_get_thinking_section_nonexistent() {
+        let msg = ChatMessage::assistant();
+        assert!(msg.get_thinking_section("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_active_thinking_section_id() {
+        let mut msg = ChatMessage::assistant();
+
+        // Initially no active thinking section
+        assert!(msg.active_thinking_section_id().is_none());
+
+        // Start a thinking section - it should be active
+        let section_id = msg.start_thinking_section();
+        assert_eq!(msg.active_thinking_section_id(), Some(section_id.as_str()));
+
+        // Finish the section - no longer active
+        msg.finish_thinking_section(&section_id);
+        assert!(msg.active_thinking_section_id().is_none());
+    }
+
+    #[test]
+    fn test_active_thinking_section_id_returns_most_recent() {
+        let mut msg = ChatMessage::assistant();
+
+        // Start first thinking section and finish it
+        let section_id_1 = msg.start_thinking_section();
+        msg.finish_thinking_section(&section_id_1);
+
+        // Start second thinking section (incomplete)
+        let section_id_2 = msg.start_thinking_section();
+
+        // active_thinking_section_id should return the second one
+        assert_eq!(
+            msg.active_thinking_section_id(),
+            Some(section_id_2.as_str())
+        );
+    }
+
+    #[test]
+    fn test_thinking_section_lifecycle() {
+        let mut msg = ChatMessage::assistant();
+
+        // Start thinking section
+        let section_id = msg.start_thinking_section();
+        assert!(msg.active_thinking_section_id().is_some());
+
+        // Append content
+        msg.append_to_thinking_section(&section_id, "Let me think...\n");
+        msg.append_to_thinking_section(&section_id, "I believe the answer is 42.");
+
+        // Verify content
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert_eq!(
+            section.content,
+            "Let me think...\nI believe the answer is 42."
+        );
+        assert!(!section.is_complete);
+
+        // Finish section
+        msg.finish_thinking_section(&section_id);
+
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(section.is_complete);
+        assert!(msg.active_thinking_section_id().is_none());
+    }
+
+    #[test]
+    fn test_append_to_nonexistent_thinking_section() {
+        let mut msg = ChatMessage::assistant();
+        // Should not panic, just update legacy content
+        msg.append_to_thinking_section("nonexistent-id", "text");
+        assert_eq!(msg.content, "text");
+    }
+
+    #[test]
+    fn test_finish_nonexistent_thinking_section() {
+        let mut msg = ChatMessage::assistant();
+        // Should not panic
+        msg.finish_thinking_section("nonexistent-id");
+    }
+
+    #[test]
+    fn test_mixed_sections_with_thinking() {
+        let mut msg = ChatMessage::assistant();
+
+        // Add thinking section
+        let thinking_id = msg.start_thinking_section();
+        msg.append_to_thinking_section(&thinking_id, "Hmm...");
+        msg.finish_thinking_section(&thinking_id);
+
+        // Add regular text
+        msg.append_to_section("Hello!");
+
+        // Add nested agent section
+        let agent_id = msg.start_nested_section("agent", "Agent");
+        msg.append_to_nested_section(&agent_id, "Agent output");
+        msg.finish_nested_section(&agent_id);
+
+        // Should have 3 sections: Thinking, Text, NestedAgent
+        assert_eq!(msg.sections.len(), 3);
+        assert!(msg.sections[0].is_thinking());
+        assert!(msg.sections[1].is_text());
+        assert!(msg.sections[2].is_nested_agent());
     }
 }

@@ -23,9 +23,9 @@ pub use types::{ExecutorError, ExecutorResult, ExecutorStreamReceiver};
 use crate::agents::{AgentManager, SpotAgent};
 use crate::config::Settings;
 use crate::db::Database;
-use crate::models::settings::ModelSettings as SpotModelSettings;
 use crate::mcp::McpManager;
 use crate::messaging::{EventBridge, MessageSender};
+use crate::models::settings::ModelSettings as SpotModelSettings;
 use crate::models::ModelRegistry;
 use crate::tools::SpotToolRegistry;
 
@@ -128,8 +128,11 @@ impl<'a> AgentExecutor<'a> {
         tool_registry: &SpotToolRegistry,
         mcp_manager: &McpManager,
     ) -> Result<ExecutorResult, ExecutorError> {
+        // Load model settings for thinking configuration
+        let spot_settings = SpotModelSettings::load(self.db, model_name).ok();
+
         // Get the model (handles OAuth models and custom endpoints)
-        let model = get_model(self.db, model_name, self.registry).await?;
+        let model = get_model(self.db, model_name, self.registry, spot_settings.as_ref()).await?;
         let wrapped_model = ArcModel(model);
 
         // Get original tool list (before filtering) to check for special tools
@@ -144,8 +147,8 @@ impl<'a> AgentExecutor<'a> {
         // Build the serdesAI agent
         let mut builder = agent(wrapped_model)
             .system_prompt(spot_agent.system_prompt())
-            .temperature(0.7)
-            .max_tokens(16384);
+            .temperature(1.0)
+            .max_tokens(30000);
 
         // Register built-in tools with real executors
         for tool in tools {
@@ -185,18 +188,34 @@ impl<'a> AgentExecutor<'a> {
         // Load per-model settings from database
         let spot_settings = SpotModelSettings::load(self.db, model_name).unwrap_or_default();
 
+        // Check if this model has thinking enabled (supports it and not explicitly disabled)
+        let model_supports_thinking = self
+            .registry
+            .get(model_name)
+            .map(|c| c.supports_thinking)
+            .unwrap_or(false);
+        let thinking_explicitly_disabled = spot_settings.extended_thinking == Some(false);
+        let thinking_enabled = model_supports_thinking && !thinking_explicitly_disabled;
+
         // Convert to serdes_ai_core::ModelSettings
+        // When thinking is enabled, temperature MUST be 1.0 per Claude API requirements
+        let effective_temp = if thinking_enabled {
+            1.0
+        } else {
+            spot_settings.effective_temperature() as f64
+        };
+
         let core_settings = serdes_ai_core::ModelSettings::new()
-            .temperature(spot_settings.effective_temperature() as f64)
-            .top_p(spot_settings.effective_top_p() as f64);
+            .temperature(effective_temp)
+            .top_p(spot_settings.effective_top_p() as f64)
+            .max_tokens(30000);
 
         // Set up run options with message history if provided
         let options = match message_history {
             Some(history) => RunOptions::new()
                 .model_settings(core_settings)
                 .message_history(history),
-            None => RunOptions::new()
-                .model_settings(core_settings),
+            None => RunOptions::new().model_settings(core_settings),
         };
 
         // Run the agent

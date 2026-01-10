@@ -6,9 +6,9 @@ use gpui_component::text::markdown;
 
 use super::ChatApp;
 use crate::gui::components::{
-    collapsible_display, current_spinner_frame, list_scrollbar, CollapsibleProps,
+    collapsible_display, current_spinner_frame, list_scrollbar, CollapsibleProps, MarkdownTooltip,
 };
-use crate::gui::state::{MessageRole, MessageSection};
+use crate::gui::state::{MessageRole, MessageSection, ThinkingSection};
 
 impl ChatApp {
     pub(super) fn render_messages(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -213,7 +213,44 @@ impl ChatApp {
                 // agent_section.id is already a stable UUID
                 self.render_agent_section_clickable(agent_section, theme, view, cx)
             }
+            MessageSection::Thinking(thinking_section) => {
+                // Thinking sections render as compact preview with hover tooltip
+                self.render_thinking_section(thinking_section, msg_id, theme)
+            }
         }
+    }
+
+    /// Render a thinking section as a compact preview with markdown tooltip on hover.
+    fn render_thinking_section(
+        &self,
+        thinking: &ThinkingSection,
+        msg_id: &str,
+        theme: &crate::gui::theme::Theme,
+    ) -> AnyElement {
+        let preview = thinking.preview();
+        let full_content = thinking.content.clone();
+        let element_id = SharedString::from(format!("thinking-{}-{}", msg_id, thinking.id));
+
+        div()
+            .id(element_id)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .px(px(8.))
+            .py(px(4.))
+            .my(px(4.))
+            .rounded(px(4.))
+            .bg(theme.tool_card)
+            .text_size(px(12.))
+            .text_color(theme.text_muted)
+            .cursor_default()
+            // Thinking emoji
+            .child("💭")
+            // Compact preview text
+            .child(format!("thinking: {}", preview))
+            // Hover tooltip with full markdown content
+            .tooltip(MarkdownTooltip::markdown(full_content))
+            .into_any_element()
     }
 
     /// Render a nested agent section as a collapsible container with click handler.

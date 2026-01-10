@@ -783,7 +783,7 @@ mod tests {
         assert!(keys.contains(&"interleaved_thinking"));
         assert!(keys.contains(&"reasoning_effort"));
         assert!(keys.contains(&"verbosity"));
-        assert_eq!(keys.len(), 8);
+        assert_eq!(keys.len(), 9);
     }
 
     #[test]

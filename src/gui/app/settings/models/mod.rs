@@ -265,7 +265,11 @@ impl ChatApp {
 
         // Chevron indicator
         let chevron = if is_expandable {
-            if is_expanded { "▼" } else { "▶" }
+            if is_expanded {
+                "▼"
+            } else {
+                "▶"
+            }
         } else {
             ""
         };
@@ -300,7 +304,9 @@ impl ChatApp {
                         cx.listener(move |this, _, window, cx| {
                             if is_expandable {
                                 // Toggle expansion
-                                if this.expanded_settings_model.as_ref() == Some(&model_name_for_expand) {
+                                if this.expanded_settings_model.as_ref()
+                                    == Some(&model_name_for_expand)
+                                {
                                     // Collapse
                                     this.expanded_settings_model = None;
                                     this.model_temp_input_entity = None;
@@ -309,9 +315,14 @@ impl ChatApp {
                                     this.model_settings_save_success = None;
                                 } else {
                                     // Expand and initialize inputs (also resets save success)
-                                    this.expanded_settings_model = Some(model_name_for_expand.clone());
+                                    this.expanded_settings_model =
+                                        Some(model_name_for_expand.clone());
                                     this.model_settings_save_success = None;
-                                    this.initialize_model_settings_inputs(&model_name_for_expand, window, cx);
+                                    this.initialize_model_settings_inputs(
+                                        &model_name_for_expand,
+                                        window,
+                                        cx,
+                                    );
                                 }
                             } else {
                                 // Non-expandable: just set as default
@@ -342,7 +353,11 @@ impl ChatApp {
                             })
                             .child(self.render_model_item_content(&model, &desc, is_selected)),
                     )
-                    .child(self.render_model_delete_button(&model_name_for_delete, is_selected, cx)),
+                    .child(self.render_model_delete_button(
+                        &model_name_for_delete,
+                        is_selected,
+                        cx,
+                    )),
             )
             // Expanded settings panel
             .when(is_expanded, |d| {
@@ -422,7 +437,11 @@ impl ChatApp {
     // =========================================================================
 
     /// Render the expanded configuration panel for a model.
-    fn render_model_settings_panel(&self, model_name: &str, cx: &Context<Self>) -> impl IntoElement {
+    fn render_model_settings_panel(
+        &self,
+        model_name: &str,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
         let theme = self.theme.clone();
 
         // Get the model config to find the api_key_env
@@ -465,11 +484,7 @@ impl ChatApp {
             // Top P
             .child(self.render_top_p_input(cx))
             // Save button
-            .child(self.render_save_settings_button(
-                &model_name_for_save,
-                api_key_env_for_save,
-                cx,
-            ))
+            .child(self.render_save_settings_button(&model_name_for_save, api_key_env_for_save, cx))
     }
 
     /// Render the temperature input row.
@@ -578,32 +593,29 @@ impl ChatApp {
             (theme.accent, "Save")
         };
 
-        div()
-            .flex()
-            .justify_end()
-            .child(
-                div()
-                    .id("save-model-settings")
-                    .px(px(12.))
-                    .py(px(6.))
-                    .rounded(px(6.))
-                    .bg(bg_color)
-                    .text_color(rgb(0xffffff))
-                    .text_size(px(12.))
-                    .cursor_pointer()
-                    .when(!is_save_success, |d| d.hover(|s| s.opacity(0.9)))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+        div().flex().justify_end().child(
+            div()
+                .id("save-model-settings")
+                .px(px(12.))
+                .py(px(6.))
+                .rounded(px(6.))
+                .bg(bg_color)
+                .text_color(rgb(0xffffff))
+                .text_size(px(12.))
+                .cursor_pointer()
+                .when(!is_save_success, |d| d.hover(|s| s.opacity(0.9)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                    })
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.save_model_settings(&model_name, api_key_env.clone(), window, cx);
-                        }),
-                    )
-                    .child(button_text),
-            )
+                        this.save_model_settings(&model_name, api_key_env.clone(), window, cx);
+                    }),
+                )
+                .child(button_text),
+        )
     }
 
     /// Initialize input entities for model settings.

@@ -36,4 +36,4 @@ pub use spinner::{current_spinner_frame, spinner, Spinner};
 
 pub use collapsible::{collapsible, collapsible_display, CollapsibleProps};
 pub use throughput_chart::{throughput_chart, ThroughputChartProps};
-pub use tooltip::SimpleTooltip;
+pub use tooltip::{MarkdownTooltip, SimpleTooltip};

@@ -376,8 +376,9 @@ fn validate_model_name(model_name: &str) -> bool {
 pub async fn get_claude_code_model(
     db: &Database,
     model_name: &str,
+    thinking_budget: Option<u64>,
 ) -> Result<ClaudeCodeOAuthModel, ClaudeCodeAuthError> {
-    debug!(model_name = %model_name, "get_claude_code_model called");
+    debug!(model_name = %model_name, ?thinking_budget, "get_claude_code_model called");
 
     let auth = ClaudeCodeAuth::new(db);
     let access_token = auth.refresh_if_needed().await?;
@@ -401,8 +402,13 @@ pub async fn get_claude_code_model(
     debug!(
         requested_model = %model_name,
         actual_model = %actual_model_name,
+        ?thinking_budget,
         "Creating Claude Code OAuth model"
     );
 
-    Ok(ClaudeCodeOAuthModel::new(actual_model_name, access_token))
+    let mut model = ClaudeCodeOAuthModel::new(actual_model_name, access_token);
+    if let Some(budget) = thinking_budget {
+        model = model.with_thinking(Some(budget));
+    }
+    Ok(model)
 }
