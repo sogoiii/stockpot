@@ -204,6 +204,8 @@ pub struct ChatApp {
     /// Target scroll offset for smooth animation (None = not animating)
     /// Uses lerp-based "chase" interpolation - the actual target (bottom) is computed per tick
     scroll_animation_target: Option<gpui::Point<gpui::Pixels>>,
+    /// Last tick time for delta-time based scroll animation
+    last_animation_tick: std::time::Instant,
 }
 
 impl ChatApp {
@@ -347,6 +349,7 @@ impl ChatApp {
 
             // Smooth scroll animation (None = not animating)
             scroll_animation_target: None,
+            last_animation_tick: std::time::Instant::now(),
         };
 
         // Start the unified UI event loop (handles both messages and animation ticks)

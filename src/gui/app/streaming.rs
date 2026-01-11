@@ -152,11 +152,27 @@ impl ChatApp {
                 // This prevents the "jumpy" instant scroll, especially with newlines
                 if !self.user_scrolled_away {
                     self.start_smooth_scroll_to_bottom();
+                    // Tick animation on every TextDelta since messages come faster than
+                    // the 8ms timeout during streaming - this keeps delta_secs small
+                    self.tick_scroll_animation();
                 }
             }
             Message::Thinking(thinking) => {
-                // Create or append to thinking section (collapsible with hover tooltip)
-                self.conversation.append_thinking(&thinking.text);
+                // Check if this thinking is from a nested agent
+                if let Some(agent_name) = &thinking.agent_name {
+                    // Route to the nested agent's section
+                    if let Some(section_id) = self.active_section_ids.get(agent_name) {
+                        // Append thinking to the nested agent section (creates if needed)
+                        self.conversation
+                            .append_thinking_in_section(section_id, &thinking.text);
+                    } else {
+                        // Fallback: append to main conversation if section not found
+                        self.conversation.append_thinking(&thinking.text);
+                    }
+                } else {
+                    // No agent attribution - append to main conversation
+                    self.conversation.append_thinking(&thinking.text);
+                }
             }
             Message::Tool(tool) => {
                 match tool.status {

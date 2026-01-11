@@ -156,6 +156,19 @@ impl AgentSection {
         }
     }
 
+    /// Check if there's an active (incomplete) thinking section
+    pub fn has_active_thinking(&self) -> bool {
+        self.items.iter().rev().any(|item| {
+            matches!(
+                item,
+                AgentContentItem::Thinking {
+                    is_complete: false,
+                    ..
+                }
+            )
+        })
+    }
+
     /// Get combined content as string (for backwards compatibility / plain text export)
     pub fn content(&self) -> String {
         self.items
@@ -213,6 +226,8 @@ pub struct ThinkingSection {
     pub content: String,
     /// Whether thinking is finished
     pub is_complete: bool,
+    /// Whether the section is collapsed in UI
+    pub is_collapsed: bool,
 }
 
 impl ThinkingSection {
@@ -222,6 +237,7 @@ impl ThinkingSection {
             id: uuid::Uuid::new_v4().to_string(),
             content: String::new(),
             is_complete: false,
+            is_collapsed: true,
         }
     }
 
@@ -233,6 +249,11 @@ impl ThinkingSection {
     /// Marks thinking as complete
     pub fn finish(&mut self) {
         self.is_complete = true;
+    }
+
+    /// Toggles the collapsed state
+    pub fn toggle_collapsed(&mut self) {
+        self.is_collapsed = !self.is_collapsed;
     }
 
     /// Returns first line or first 50 chars (whichever is shorter), with "..." if truncated
@@ -430,6 +451,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_agent_section_has_active_thinking() {
+        let mut section = AgentSection::new("agent", "Agent");
+
+        // No thinking yet
+        assert!(!section.has_active_thinking());
+
+        // Start thinking
+        section.start_thinking();
+        assert!(section.has_active_thinking());
+
+        // Complete thinking
+        section.complete_thinking();
+        assert!(!section.has_active_thinking());
+
+        // Start another
+        section.start_thinking();
+        assert!(section.has_active_thinking());
+    }
+
     // ==========================================================================
     // MessageSection tests
     // ==========================================================================
@@ -466,6 +507,7 @@ mod tests {
         assert!(!section.id.is_empty(), "ID should be generated");
         assert_eq!(section.content, "");
         assert!(!section.is_complete);
+        assert!(section.is_collapsed, "Should start collapsed by default");
     }
 
     #[test]
@@ -482,6 +524,24 @@ mod tests {
         assert!(!section.is_complete);
         section.finish();
         assert!(section.is_complete);
+    }
+
+    #[test]
+    fn test_thinking_section_toggle_collapsed() {
+        let mut section = ThinkingSection::new();
+        assert!(section.is_collapsed, "Should start collapsed");
+
+        section.toggle_collapsed();
+        assert!(
+            !section.is_collapsed,
+            "Should be uncollapsed after first toggle"
+        );
+
+        section.toggle_collapsed();
+        assert!(
+            section.is_collapsed,
+            "Should be collapsed after second toggle"
+        );
     }
 
     #[test]

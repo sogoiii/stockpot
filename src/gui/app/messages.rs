@@ -5,9 +5,7 @@ use gpui::{
 use gpui_component::text::markdown;
 
 use super::ChatApp;
-use crate::gui::components::{
-    collapsible_display, list_scrollbar, CollapsibleProps, MarkdownTooltip,
-};
+use crate::gui::components::{collapsible_display, list_scrollbar, CollapsibleProps};
 use crate::gui::state::{
     AgentContentItem, MessageRole, MessageSection, ThinkingSection, ToolCallSection,
 };
@@ -216,8 +214,8 @@ impl ChatApp {
                 self.render_agent_section_clickable(agent_section, theme, view, cx)
             }
             MessageSection::Thinking(thinking_section) => {
-                // Thinking sections render as compact preview with hover tooltip
-                self.render_thinking_section(thinking_section, msg_id, theme)
+                // Thinking sections render as collapsible containers
+                self.render_thinking_section(thinking_section, msg_id, theme, view, cx)
             }
             MessageSection::ToolCall(tool_section) => {
                 // Tool call sections render as styled inline elements
@@ -226,42 +224,74 @@ impl ChatApp {
         }
     }
 
-    /// Render a thinking section as a styled inline element with tooltip.
-    /// Format: • Thinking preview...
+    /// Render a thinking section as a collapsible container with click handler.
+    /// Shows "Thinking" + preview when collapsed, full markdown content when expanded.
     fn render_thinking_section(
         &self,
         thinking: &ThinkingSection,
-        msg_id: &str,
+        _msg_id: &str,
         theme: &crate::gui::theme::Theme,
+        view: &Entity<ChatApp>,
+        _cx: &App,
     ) -> AnyElement {
-        let preview = thinking.preview();
-        let full_content = thinking.content.clone();
-        let element_id = SharedString::from(format!("thinking-{}-{}", msg_id, thinking.id));
+        let is_collapsed = thinking.is_collapsed;
+        let stable_id = &thinking.id;
+
+        // Build title: "Thinking" + preview when collapsed
+        let title = if is_collapsed {
+            let preview = thinking.preview();
+            if preview.is_empty() {
+                "Thinking".to_string()
+            } else {
+                format!("Thinking: {}", preview)
+            }
+        } else {
+            "Thinking".to_string()
+        };
+
+        let props = CollapsibleProps::with_theme(theme)
+            .id(format!("thinking-{}", stable_id))
+            .title(title)
+            .collapsed(is_collapsed)
+            .loading(!thinking.is_complete);
+
+        // LAZY EVALUATION: Only render content when section is expanded!
+        let content = if is_collapsed {
+            // Fast path: empty placeholder when collapsed
+            div().into_any_element()
+        } else {
+            // Full markdown content when expanded
+            let element_id = SharedString::from(format!("thinking-{}-content", stable_id));
+            div()
+                .id(element_id)
+                .w_full()
+                .overflow_x_hidden()
+                .child(markdown(&thinking.content).selectable(true))
+                .into_any_element()
+        };
+
+        // Create the collapsible in display-only mode
+        let collapsible_element = collapsible_display(props, content);
+
+        // Clone for click handler closure
+        let section_id = thinking.id.clone();
+        let view = view.clone();
 
         div()
-            .id(element_id)
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .py(px(3.))
-            .my(px(2.))
-            .text_size(px(13.))
-            .cursor_default()
-            // Muted bullet
-            .child(div().text_color(theme.tool_bullet).child("•"))
-            // Semi-bold colored "Thinking" (matches markdown styling)
-            .child(
-                div()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.tool_verb)
-                    .child("Thinking"),
-            )
-            // Preview text
-            .when(!preview.is_empty(), |el| {
-                el.child(div().text_color(theme.text_muted).child(preview))
+            .id(SharedString::from(format!(
+                "thinking-{}-container",
+                stable_id
+            )))
+            .w_full()
+            .my(px(8.)) // Vertical margin for visual separation
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                view.update(cx, |app, cx| {
+                    app.conversation.toggle_thinking_collapsed(&section_id);
+                    cx.notify();
+                });
             })
-            // Hover tooltip with full markdown content
-            .tooltip(MarkdownTooltip::markdown(full_content))
+            .child(collapsible_element)
             .into_any_element()
     }
 

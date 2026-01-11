@@ -240,6 +240,18 @@ impl ChatMessage {
         }
         None
     }
+
+    /// Toggle the collapsed state of a thinking section
+    pub fn toggle_thinking_collapsed(&mut self, section_id: &str) {
+        for section in &mut self.sections {
+            if let MessageSection::Thinking(ref mut thinking) = section {
+                if thinking.id == section_id {
+                    thinking.toggle_collapsed();
+                    return;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -575,6 +587,33 @@ mod tests {
         // Should not panic, just update legacy content
         msg.append_to_thinking_section("nonexistent-id", "text");
         assert_eq!(msg.content, "text");
+    }
+
+    #[test]
+    fn test_toggle_thinking_collapsed() {
+        let mut msg = ChatMessage::assistant();
+        let section_id = msg.start_thinking_section();
+
+        // Initially collapsed (default for ThinkingSection)
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(section.is_collapsed);
+
+        // Toggle to uncollapsed
+        msg.toggle_thinking_collapsed(&section_id);
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(!section.is_collapsed);
+
+        // Toggle back to collapsed
+        msg.toggle_thinking_collapsed(&section_id);
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(section.is_collapsed);
+    }
+
+    #[test]
+    fn test_toggle_thinking_collapsed_nonexistent() {
+        let mut msg = ChatMessage::assistant();
+        // Should not panic
+        msg.toggle_thinking_collapsed("nonexistent-id");
     }
 
     #[test]

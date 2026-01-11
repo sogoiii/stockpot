@@ -96,7 +96,9 @@ impl EventBridge {
             }
 
             StreamEvent::ThinkingDelta { text } => {
-                let _ = self.sender.send(Message::thinking(&text));
+                let _ = self
+                    .sender
+                    .send(Message::thinking_from(&text, &self.agent_name));
             }
 
             StreamEvent::ToolCallStart {
@@ -522,8 +524,28 @@ mod tests {
         let msg = receiver.recv().await.unwrap();
         if let Message::Thinking(t) = msg {
             assert_eq!(t.text, "Analyzing...");
+            assert_eq!(t.agent_name, Some("thinker".to_string()));
         } else {
             panic!("Expected Thinking message");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_thinking_delta_sub_agent_attribution() {
+        let bus = MessageBus::new();
+        let mut receiver = bus.subscribe();
+        let mut bridge = EventBridge::new(bus.sender(), "code-reviewer", "Code Reviewer");
+
+        bridge.process(StreamEvent::ThinkingDelta {
+            text: "Reviewing code quality...".to_string(),
+        });
+
+        let msg = receiver.recv().await.unwrap();
+        if let Message::Thinking(t) = msg {
+            assert_eq!(t.text, "Reviewing code quality...");
+            assert_eq!(t.agent_name, Some("code-reviewer".to_string()));
+        } else {
+            panic!("Expected Thinking message with sub-agent attribution");
         }
     }
 

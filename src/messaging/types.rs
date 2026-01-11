@@ -169,6 +169,8 @@ pub struct TextDeltaMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingMessage {
     pub text: String,
+    /// Agent name for attribution (None = main agent)
+    pub agent_name: Option<String>,
 }
 
 /// Any message type (for serialization).
@@ -481,10 +483,19 @@ impl Message {
         })
     }
 
-    /// Create a thinking delta message.
+    /// Create a thinking delta message (unattributed, for main agent).
     pub fn thinking(text: &str) -> Self {
         Self::Thinking(ThinkingMessage {
             text: text.to_string(),
+            agent_name: None,
+        })
+    }
+
+    /// Create a thinking delta message with agent attribution.
+    pub fn thinking_from(text: &str, agent_name: &str) -> Self {
+        Self::Thinking(ThinkingMessage {
+            text: text.to_string(),
+            agent_name: Some(agent_name.to_string()),
         })
     }
 }
@@ -988,6 +999,18 @@ mod tests {
         let msg = Message::thinking("considering options...");
         if let Message::Thinking(thinking) = msg {
             assert_eq!(thinking.text, "considering options...");
+            assert!(thinking.agent_name.is_none());
+        } else {
+            panic!("Expected Thinking variant");
+        }
+    }
+
+    #[test]
+    fn test_message_thinking_from() {
+        let msg = Message::thinking_from("analyzing...", "sub-agent");
+        if let Message::Thinking(thinking) = msg {
+            assert_eq!(thinking.text, "analyzing...");
+            assert_eq!(thinking.agent_name, Some("sub-agent".to_string()));
         } else {
             panic!("Expected Thinking variant");
         }
@@ -1237,10 +1260,24 @@ mod tests {
     fn test_thinking_message_serde() {
         let msg = ThinkingMessage {
             text: "Analyzing the problem...".to_string(),
+            agent_name: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ThinkingMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.text, "Analyzing the problem...");
+        assert!(parsed.agent_name.is_none());
+    }
+
+    #[test]
+    fn test_thinking_message_serde_with_agent() {
+        let msg = ThinkingMessage {
+            text: "Sub-agent thinking...".to_string(),
+            agent_name: Some("helper".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let parsed: ThinkingMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.text, "Sub-agent thinking...");
+        assert_eq!(parsed.agent_name, Some("helper".to_string()));
     }
 
     // =========================================================================

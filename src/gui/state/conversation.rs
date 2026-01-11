@@ -139,6 +139,17 @@ impl Conversation {
             .and_then(|msg| msg.active_thinking_section_id())
     }
 
+    /// Toggle the collapsed state of a thinking section
+    pub fn toggle_thinking_collapsed(&mut self, section_id: &str) {
+        // Search through all messages for the section
+        for msg in &mut self.messages {
+            if msg.get_thinking_section(section_id).is_some() {
+                msg.toggle_thinking_collapsed(section_id);
+                return;
+            }
+        }
+    }
+
     /// Append to an existing active thinking section, or create a new one if none exists.
     /// Returns the section ID.
     pub fn append_thinking(&mut self, text: &str) -> Option<String> {
@@ -270,6 +281,22 @@ impl Conversation {
     pub fn append_to_thinking_in_section(&mut self, section_id: &str, text: &str) {
         if let Some(msg) = self.messages.last_mut() {
             if let Some(section) = msg.get_nested_section_mut(section_id) {
+                section.append_to_thinking(text);
+            }
+        }
+    }
+
+    /// Append to an existing active thinking section in a nested agent, or create a new one.
+    /// This mirrors the behavior of `append_thinking` but for nested agent sections.
+    pub fn append_thinking_in_section(&mut self, section_id: &str, text: &str) {
+        if let Some(msg) = self.messages.last_mut() {
+            if let Some(section) = msg.get_nested_section_mut(section_id) {
+                // Check if there's an active thinking section
+                if !section.has_active_thinking() {
+                    // Start a new one
+                    section.start_thinking();
+                }
+                // Append to the active thinking section
                 section.append_to_thinking(text);
             }
         }
@@ -783,5 +810,124 @@ mod tests {
         assert!(msg.sections[0].is_thinking());
         assert!(msg.sections[1].is_text());
         assert!(msg.sections[2].is_nested_agent());
+    }
+
+    #[test]
+    fn test_toggle_thinking_collapsed() {
+        let mut conv = Conversation::new();
+        conv.start_assistant_message();
+
+        let section_id = conv.start_thinking().unwrap();
+
+        // Initially collapsed (default for ThinkingSection)
+        let msg = conv.messages.last().unwrap();
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(section.is_collapsed);
+
+        // Toggle via conversation
+        conv.toggle_thinking_collapsed(&section_id);
+
+        let msg = conv.messages.last().unwrap();
+        let section = msg.get_thinking_section(&section_id).unwrap();
+        assert!(!section.is_collapsed);
+    }
+
+    #[test]
+    fn test_toggle_thinking_collapsed_searches_all_messages() {
+        let mut conv = Conversation::new();
+
+        // First message with thinking section
+        conv.start_assistant_message();
+        let section_id_1 = conv.start_thinking().unwrap();
+        conv.append_to_thinking(&section_id_1, "First thoughts");
+        conv.finish_thinking(&section_id_1);
+        conv.finish_current_message();
+
+        // Second message with another thinking section
+        conv.start_assistant_message();
+        let section_id_2 = conv.start_thinking().unwrap();
+        conv.append_to_thinking(&section_id_2, "Second thoughts");
+        conv.finish_current_message();
+
+        // Toggle the first message's thinking section
+        conv.toggle_thinking_collapsed(&section_id_1);
+
+        // Verify first section toggled (was collapsed, now uncollapsed)
+        let section = conv.messages[0]
+            .get_thinking_section(&section_id_1)
+            .unwrap();
+        assert!(!section.is_collapsed);
+
+        // Verify second section unchanged (still collapsed)
+        let section = conv.messages[1]
+            .get_thinking_section(&section_id_2)
+            .unwrap();
+        assert!(section.is_collapsed);
+    }
+
+    #[test]
+    fn test_toggle_thinking_collapsed_nonexistent() {
+        let mut conv = Conversation::new();
+        conv.start_assistant_message();
+
+        // Should not panic
+        conv.toggle_thinking_collapsed("nonexistent-id");
+    }
+
+    // ==========================================================================
+    // Nested agent thinking tests
+    // ==========================================================================
+
+    #[test]
+    fn test_append_thinking_in_section_creates_new() {
+        let mut conv = Conversation::new();
+        conv.start_assistant_message();
+
+        // Start a nested agent section
+        let section_id = conv.start_nested_agent("sub-agent", "Sub Agent").unwrap();
+
+        // Append thinking - should create a new thinking section
+        conv.append_thinking_in_section(&section_id, "Analyzing...");
+
+        // Verify thinking was added to the nested section
+        let msg = conv.messages.last().unwrap();
+        let section = msg.get_nested_section(&section_id).unwrap();
+        assert!(section.has_active_thinking());
+        // Content should include the thinking indicator
+        assert!(section.content().contains("Thinking"));
+    }
+
+    #[test]
+    fn test_append_thinking_in_section_appends_to_existing() {
+        let mut conv = Conversation::new();
+        conv.start_assistant_message();
+
+        let section_id = conv.start_nested_agent("sub-agent", "Sub Agent").unwrap();
+
+        // First append creates thinking section
+        conv.append_thinking_in_section(&section_id, "First thought. ");
+        // Second append should add to existing
+        conv.append_thinking_in_section(&section_id, "Second thought.");
+
+        // Verify only one thinking section exists with combined content
+        let msg = conv.messages.last().unwrap();
+        let section = msg.get_nested_section(&section_id).unwrap();
+
+        // Count thinking items
+        let thinking_count = section
+            .items
+            .iter()
+            .filter(|item| matches!(item, crate::gui::state::AgentContentItem::Thinking { .. }))
+            .count();
+        assert_eq!(thinking_count, 1, "Should only have one thinking section");
+    }
+
+    #[test]
+    fn test_append_thinking_in_section_nonexistent() {
+        let mut conv = Conversation::new();
+        conv.start_assistant_message();
+
+        // Should not panic when section doesn't exist
+        conv.append_thinking_in_section("nonexistent", "Some thoughts");
     }
 }

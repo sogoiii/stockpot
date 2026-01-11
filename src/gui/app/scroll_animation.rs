@@ -10,10 +10,9 @@ use gpui::{point, px, Pixels};
 
 use super::ChatApp;
 
-/// Interpolation factor per tick (higher = faster, snappier animation)
-/// At 8ms tick rate (120fps), 0.30 gives ~7 frames (~56ms) to reach 90% of target.
-/// This creates a smooth, responsive scroll.
-const SCROLL_LERP_FACTOR: f32 = 0.30;
+/// Animation speed for exponential smoothing (higher = faster)
+/// At 3.0, animation reaches ~90% of target in ~750ms regardless of frame rate
+const SCROLL_SMOOTH_SPEED: f32 = 3.0;
 
 /// Minimum scroll distance to bother animating (in pixels)
 /// Below this threshold, we snap to target immediately.
@@ -53,11 +52,12 @@ impl ChatApp {
 
         // Mark that we want to animate to bottom
         self.scroll_animation_target = Some(point(px(0.), px(0.))); // Placeholder, real target computed in tick
+        self.last_animation_tick = std::time::Instant::now();
     }
 
     /// Tick the scroll animation, interpolating toward the bottom.
     ///
-    /// Uses lerp (linear interpolation) with a fixed factor for smooth "chase" behavior.
+    /// Uses delta-time exponential smoothing for frame-rate independent animation.
     /// This works well with streaming content where the target keeps moving.
     ///
     /// Returns `true` if we made a scroll adjustment, `false` if no adjustment needed.
@@ -95,9 +95,18 @@ impl ChatApp {
             return true;
         }
 
-        // Lerp toward target: new_y = current_y + (target_y - current_y) * factor
-        let delta = (target_y - current_y) * SCROLL_LERP_FACTOR;
-        let new_y = current_y + delta;
+        // Delta-time based exponential smoothing (frame-rate independent)
+        let now = std::time::Instant::now();
+        let delta_secs = now.duration_since(self.last_animation_tick).as_secs_f32();
+        self.last_animation_tick = now;
+
+        // Clamp delta to prevent huge jumps after pauses (e.g., app was backgrounded)
+        let delta_secs = delta_secs.min(0.1);
+
+        // Exponential decay: factor approaches 1.0 over time, giving smooth deceleration
+        // This produces identical animation speed on 60Hz, 120Hz, or variable refresh
+        let factor = 1.0 - (-SCROLL_SMOOTH_SPEED * delta_secs).exp();
+        let new_y = current_y + (target_y - current_y) * factor;
 
         self.messages_list_state
             .set_offset_from_scrollbar(point(current_offset.x, new_y));
