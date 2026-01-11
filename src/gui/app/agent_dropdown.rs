@@ -70,7 +70,7 @@ impl ChatApp {
                                         } else {
                                             theme.text
                                         })
-                                        .text_size(px(13.))
+                                        .text_size(px(16.))
                                         .cursor_pointer()
                                         .hover(|s| s.bg(theme.tool_card))
                                         .on_mouse_up(

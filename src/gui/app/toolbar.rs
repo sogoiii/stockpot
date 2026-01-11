@@ -9,13 +9,12 @@ impl ChatApp {
     pub(super) fn render_toolbar(&self, cx: &Context<Self>) -> impl IntoElement {
         let agent_display = self.current_agent_display();
         let (effective_model, _is_pinned) = self.current_effective_model();
-        let model_display = Self::truncate_model_name(&effective_model);
-        let agent_chevron = if self.show_agent_dropdown {
-            "▴"
+        let model_display_short = if _is_pinned {
+            Self::truncate_model_name(&effective_model)
         } else {
-            "▾"
+            "default".to_string()
         };
-        let model_chevron = if self.show_model_dropdown {
+        let agent_chevron = if self.show_agent_dropdown {
             "▴"
         } else {
             "▾"
@@ -69,24 +68,6 @@ impl ChatApp {
             .size_full()
         };
 
-        let model_bounds_tracker = {
-            let view = view.clone();
-            gpui::canvas(
-                move |bounds, _window, cx| {
-                    let should_update = view.read(cx).model_dropdown_bounds != Some(bounds);
-                    if should_update {
-                        view.update(cx, |this, _| {
-                            this.model_dropdown_bounds = Some(bounds);
-                        });
-                    }
-                },
-                |_, _, _, _| {},
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-        };
 
         let cwd_display = std::env::current_dir()
             .map(|p| p.display().to_string())
@@ -131,16 +112,17 @@ impl ChatApp {
                             .child(
                                 div()
                                     .id("agent-selector")
-                                    .min_w(px(180.))
+                                    .min_w(px(220.))
                                     .px(px(10.))
                                     .py(px(5.))
                                     .rounded(px(6.))
-                                    .bg(self.theme.tool_card)
+                                    .border_1()
+                                    .border_color(gpui::rgba(0x00000000))
                                     .text_color(self.theme.text)
-                                    .text_size(px(12.))
+                                    .text_size(px(14.))
                                     .cursor_pointer()
                                     .relative()
-                                    .hover(|s| s.opacity(0.8))
+                                    .hover(|s| s.border_color(self.theme.border))
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
@@ -153,36 +135,9 @@ impl ChatApp {
                                         }),
                                     )
                                     .child(agent_bounds_tracker)
-                                    .child(format!("{} {}", agent_display, agent_chevron)),
+                                    .child(format!("{} • {} {}", agent_display, model_display_short, agent_chevron)),
                             )
-                            // Model selector
-                            .child(
-                                div()
-                                    .id("model-selector")
-                                    .min_w(px(220.))
-                                    .px(px(10.))
-                                    .py(px(5.))
-                                    .rounded(px(6.))
-                                    .bg(self.theme.tool_card)
-                                    .text_color(self.theme.text)
-                                    .text_size(px(12.))
-                                    .cursor_pointer()
-                                    .relative()
-                                    .hover(|s| s.opacity(0.8))
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| {
-                                            this.show_model_dropdown = !this.show_model_dropdown;
-                                            if this.show_model_dropdown {
-                                                this.show_agent_dropdown = false;
-                                                this.show_settings = false;
-                                            }
-                                            cx.notify();
-                                        }),
-                                    )
-                                    .child(model_bounds_tracker)
-                                    .child(format!("📦 {} {}", model_display, model_chevron)),
-                            )
+
                             // Context usage indicator
                             .child(
                                 div()
@@ -193,7 +148,6 @@ impl ChatApp {
                                     .px(px(10.))
                                     .py(px(5.))
                                     .rounded(px(6.))
-                                    .bg(self.theme.tool_card)
                                     .tooltip(move |_window, cx| {
                                         cx.new(|_| {
                                             super::super::components::SimpleTooltip::new(format!(

@@ -80,7 +80,6 @@ pub fn throughput_chart(props: ThroughputChartProps) -> impl IntoElement {
         .px(px(4.))
         .py(px(2.))
         .rounded(px(4.))
-        .bg(props.background_color)
         .when(!props.is_active, |d| d.opacity(0.5))
         .children(bars)
 }
