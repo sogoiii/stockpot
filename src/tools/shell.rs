@@ -53,9 +53,7 @@ pub struct CommandRunner {
 impl CommandRunner {
     /// Create a new command runner.
     pub fn new() -> Self {
-        Self {
-            working_dir: None,
-        }
+        Self { working_dir: None }
     }
 
     /// Set working directory.
@@ -70,7 +68,6 @@ impl CommandRunner {
         self
     }
 
-
     /// Run a command.
     pub fn run(&self, command: &str) -> Result<CommandResult, ShellError> {
         let shell = if cfg!(windows) { "cmd" } else { "sh" };
@@ -82,7 +79,6 @@ impl CommandRunner {
         if let Some(dir) = &self.working_dir {
             cmd.current_dir(dir);
         }
-
 
         let output = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).output()?;
 
@@ -106,7 +102,6 @@ impl CommandRunner {
             stderr_truncated,
         })
     }
-
 }
 
 impl Default for CommandRunner {
@@ -114,7 +109,6 @@ impl Default for CommandRunner {
         Self::new()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -183,9 +177,7 @@ mod tests {
 
     #[test]
     fn test_command_runner_builder_chain() {
-        let runner = CommandRunner::new()
-            .working_dir("/tmp")
-            .timeout(30); // timeout is a no-op but should compile
+        let runner = CommandRunner::new().working_dir("/tmp").timeout(30); // timeout is a no-op but should compile
 
         assert_eq!(runner.working_dir, Some("/tmp".to_string()));
     }
@@ -197,7 +189,6 @@ mod tests {
         assert!(result.stdout.contains("hello"));
         assert_eq!(result.exit_code, 0);
     }
-
 
     #[test]
     fn test_shell_error_display() {

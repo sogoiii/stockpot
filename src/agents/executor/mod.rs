@@ -35,10 +35,7 @@ use sub_agents::{InvokeAgentExecutor, ListAgentsExecutor};
 
 use serdes_ai_agent::{agent, RunOptions};
 use serdes_ai_core::messages::{ImageMediaType, UserContent, UserContentPart};
-use serdes_ai_core::{
-    ModelRequest,
-    ToolReturnPart,
-};
+use serdes_ai_core::{ModelRequest, ToolReturnPart};
 use serdes_ai_tools::{Tool, ToolDefinition};
 
 use std::sync::Arc;
@@ -527,7 +524,6 @@ impl<'a> AgentExecutor<'a> {
 // Private implementation details in a separate impl block
 mod streaming;
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -800,14 +796,7 @@ mod tests {
         };
 
         let result = executor
-            .execute_with_images(
-                &agent,
-                "gpt-4",
-                "test prompt",
-                &[],
-                None,
-                &context,
-            )
+            .execute_with_images(&agent, "gpt-4", "test prompt", &[], None, &context)
             .await;
 
         assert!(result.is_err());

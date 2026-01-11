@@ -96,7 +96,6 @@ impl<'a> ClaudeCodeAuth<'a> {
         debug!("Using existing valid token");
         Ok(tokens.access_token)
     }
-
 }
 
 // ============================================================================

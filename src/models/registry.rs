@@ -28,7 +28,6 @@ impl ModelRegistry {
         Self::default()
     }
 
-
     /// Load models from the database.
     ///
     /// Models are added explicitly via `/add_model` or OAuth flows.
@@ -237,7 +236,6 @@ impl ModelRegistry {
     pub fn len(&self) -> usize {
         self.models.len()
     }
-
 
     /// Get the config directory path.
     pub fn config_dir() -> Result<PathBuf, ModelConfigError> {
@@ -1005,7 +1003,6 @@ mod tests {
 
         assert_eq!(available, vec!["alpha", "monkey", "zebra"]);
     }
-
 
     // =========================================================================
     // Edge Cases Tests

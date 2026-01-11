@@ -19,9 +19,7 @@
 //! )
 //! ```
 
-use gpui::{
-    div, prelude::*, px, Hsla, MouseButton, Rgba, SharedString, Styled,
-};
+use gpui::{div, prelude::*, px, Hsla, MouseButton, Rgba, SharedString, Styled};
 
 use super::current_spinner_frame;
 

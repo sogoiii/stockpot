@@ -4,8 +4,8 @@
 //! that dispatches to individual tab renderers.
 
 use gpui::{
-    div, prelude::*, px, rgb, Context, MouseButton, SharedString,
-    StatefulInteractiveElement, Styled,
+    div, prelude::*, px, rgb, Context, MouseButton, SharedString, StatefulInteractiveElement,
+    Styled,
 };
 
 use crate::gui::app::ChatApp;

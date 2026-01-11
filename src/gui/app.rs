@@ -5,8 +5,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    actions, div, prelude::*, px, App, AsyncApp, Context, Entity, ExternalPaths,
-    FocusHandle, Focusable, KeyBinding, ListAlignment, ListState, ScrollHandle, Styled, WeakEntity, Window,
+    actions, div, prelude::*, px, App, AsyncApp, Context, Entity, ExternalPaths, FocusHandle,
+    Focusable, KeyBinding, ListAlignment, ListState, ScrollHandle, Styled, WeakEntity, Window,
 };
 use gpui_component::input::{InputEvent, InputState};
 

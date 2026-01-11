@@ -78,7 +78,6 @@ impl Spinner {
         .detach();
     }
 
-
     /// Get the current frame character.
     fn current_frame(&self) -> &'static str {
         SPINNER_FRAMES[self.frame_index]

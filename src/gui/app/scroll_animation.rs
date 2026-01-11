@@ -104,5 +104,4 @@ impl ChatApp {
 
         true // Animation still in progress
     }
-
 }

@@ -118,7 +118,6 @@ pub fn is_text_file(path: &str) -> bool {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

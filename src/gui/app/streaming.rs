@@ -309,5 +309,4 @@ impl ChatApp {
             cx.notify();
         }
     }
-
 }

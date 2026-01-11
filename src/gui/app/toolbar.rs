@@ -68,7 +68,6 @@ impl ChatApp {
             .size_full()
         };
 
-
         let cwd_display = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "(unknown)".to_string());
@@ -135,9 +134,11 @@ impl ChatApp {
                                         }),
                                     )
                                     .child(agent_bounds_tracker)
-                                    .child(format!("{} • {} {}", agent_display, model_display_short, agent_chevron)),
+                                    .child(format!(
+                                        "{} • {} {}",
+                                        agent_display, model_display_short, agent_chevron
+                                    )),
                             )
-
                             // Context usage indicator
                             .child(
                                 div()
